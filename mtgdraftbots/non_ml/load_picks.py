@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import zstandard as zstd
 from tqdm.auto import tqdm
 
 with open('data/maps/old_int_to_card.json') as fp:
@@ -139,7 +140,7 @@ def picks_to_pairs(picks, mm, dest_folder):
                     context_idxs[pair_idx] = context_idx
                     pair_idx += 1
     with open(dest_folder / 'counts.json', 'w') as count_file:
-        json.dump(count_file, {"pairs": pair_idx, "contexts": context_count})
+        json.dump({"pairs": pair_idx, "contexts": context_count}, count_file)
     print(dest_folder, pair_idx, context_count)
     cctx = zstd.ZstdCompressor(level=10, threads=-1)
     for name, arr in (('pairs', pairs), ('context_idxs', context_idxs), ('picked', picked), ('seen', seen),

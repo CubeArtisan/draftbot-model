@@ -22,16 +22,6 @@ from mtgdraftbots.ml.draftbots import DraftBot
 
 locale.setlocale(locale.LC_ALL, '')
 
-BATCH_CHOICES = (16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 64532)
-EMBED_DIMS_CHOICES = (2, 4, 8, 16, 32, 64, 128, 256, 512)
-NUM_HEAD_CHOICES = tuple(2 ** i for i in range(6))
-
-HP_BATCH_SIZE = hp.HParam('batch_size', hp.Discrete(BATCH_CHOICES))
-HP_EMBED_DIMS = hp.HParam('embedding_dimensions', hp.Discrete(EMBED_DIMS_CHOICES))
-HP_LEARNING_RATE = hp.HParam('learning_rate', hp.RealInterval(1e-06, 1e+05))
-HP_RATING_L2_WEGIHT = hp.HParam('l2_loss_weight', hp.RealInterval(0.0, 1.0))
-HP_NUM_HEADS = hp.HParam('num_heads', hp.Discrete(NUM_HEAD_CHOICES))
-
 
 class TensorBoardFix(tf.keras.callbacks.TensorBoard):
     """
@@ -89,7 +79,7 @@ class PickGenerator(tf.keras.utils.Sequence):
         context_idxs = self.context_idxs[indices]
         result = (pairs, self.picked[context_idxs], self.seen[context_idxs], self.coords[context_idxs],
                   self.coord_weights[context_idxs], self.y_idx[context_idxs])
-        return (result,)
+        return (result,self.y_idx[context_idxs])
 
     def __call__(self):
         for i, pair in enumerate(self.pairs):
@@ -149,20 +139,47 @@ class ExponentialCyclingLearningRate(tf.keras.optimizers.schedules.LearningRateS
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
+    BATCH_CHOICES = tuple(2 ** i for i in range(4, 18))
+    EMBED_DIMS_CHOICES = tuple(2 ** i for i in range(1, 10))
+    HYPER_PARAMS = (
+        {"name": "batch_size", "type": int, "choices": BATCH_CHOICES, "range": hp.Discrete(BATCH_CHOICES),
+         "default": 8192, "help": "The batch size for one step."},
+        {"name": "learning_rate", "type": float, "choices": [Range(1e-06, 1e+01)],
+         "range": hp.RealInterval(1e-06, 1e+05), "default": 1e-03, "help": "The initial learning rate to train with."},
+        {"name": "embed_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+         "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": "The number of dimensions to use for card embeddings."},
+        {"name": "seen_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+         "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for seen card embeddings.'},
+        {"name": 'picked_dims', "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+         "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for picked card embeddings.'},
+        {"name": 'dropout_picked', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the pool embedding.'},
+        {"name": 'dropout_seen', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the seen embedding.'},
+        {"name": 'dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
+        {"name": 'contrastive_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on difference of the scores.'},
+        {"name": 'log_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on the log of the probability we guess correctly for each pair.'},
+        {"name": 'rating_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make card ratings uniformly distributed.'},
+        {"name": 'picked_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make picked synergies uniformly distributed.'},
+        {"name": 'seen_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make seen synergies uniformly distributed.'},
+        {"name": 'margin', "type": float, "default": 1.0, "choices": [Range(0.0, 1e+02)],
+         "range": hp.RealInterval(0.0, 1e+02), "help": 'The minimum amount the score of the correct option should win by.'}
+    )
+
     parser.add_argument('--epochs', '-e', type=int, required=True, help="The maximum number of epochs to train for")
-    parser.add_argument('--name', '-o', '-n', type=str, required=True, help="The name to save this model under.")
-    parser.add_argument('--batch-size', '-b', type=int, required=True, help="The batch size to train over.")
-    parser.add_argument('--learning-rate', '-l', type=float, default=None, choices=[Range(1e-06, 1e+05)], help="The initial learning rate to train with.")
-    parser.add_argument('--embed-dims', '-d', type=int, default=16, choices=EMBED_DIMS_CHOICES, help="The number of dimensions to use for card embeddings.")
-    parser.add_argument('--seen-dims', type=int, default=16, choices=EMBED_DIMS_CHOICES, help='The number of dimensions to use for seen card embeddings.')
-    parser.add_argument('--picked-dims', type=int, default=16, choices=EMBED_DIMS_CHOICES, help='The number of dimensions to use for picked card embeddings.')
-    parser.add_argument('--dropout-picked', type=float, default=0.0, help='The percent of cards to drop from picked when calculating the pool embedding.')
-    parser.add_argument('--dropout-seen', type=float, default=0.0, help='The percent of cards to drop from picked when calculating the seen embedding.')
-    parser.add_argument('--dropout-dense', type=float, default=0.0, help='The percent of values to drop from the dense layers when calculating pool/seen embeddings.')
-    parser.add_argument('--seed', type=int, default=37, help='The random seed to initialize things with to improve reproducibility.')
     parser.add_argument('--runtime', type=int, default=None, help='Number of minutes to train for.')
-    parser.add_argument('--contrastive-loss-weight', type=float, default=0.0, help='The relative weight of the loss based on difference of the scores.')
-    parser.add_argument('--margin', type=float, default=1.0, help='The minimum amount the score of the correct option should win by.')
+    parser.add_argument('--name', '-o', '-n', type=str, required=True, help="The name to save this model under.")
+    parser.add_argument('--seed', type=int, default=37, help='The random seed to initialize things with to improve reproducibility.')
+    for param in HYPER_PARAMS:
+        parser.add_argument(f'--{param["name"]}', type=param["type"], default=param["default"],
+                            choices=param["choices"], help=param["help"])
+    parser.add_argument('--hyperbolic', action='store_true', help='Use the hyperbolic geometry model.')
     float_type_group = parser.add_mutually_exclusive_group()
     float_type_group.add_argument('-16', dest='float_type', const=tf.float16, action='store_const', help='Use 16 bit numbers throughout the model.')
     float_type_group.add_argument('--auto16', '-16rw', action='store_true', help='Automatically rewrite some operations to use 16 bit numbers.')
@@ -175,11 +192,10 @@ if __name__ == "__main__":
     parser.add_argument('--debug', action='store_true', help='Enable debug dumping of tensor stats.')
     parser.add_argument('--mlir', action='store_true', help='Enable MLIR passes on the data (EXPERIMENTAL).')
     parser.add_argument('--profile', action='store_true', help='Enable profiling a range of batches from the first epoch.')
-    parser.add_argument('--num-workers', '-j', type=int, default=32, choices=[Range(1, 128)], help='The number of threads to use for loading data from disk.')
-    parser.add_argument('--starting-step', type=int, default=0, help='The starting step number in batches.')
-    parser.add_argument('--hyperbolic', action='store_true', help='Use the hyperbolic geometry model.')
     parser.set_defaults(float_type=tf.float32, use_xla=True)
     args = parser.parse_args()
+    hparams = {hp.HParam(param["name"], param["range"]): getattr(args, param["name"]) for param in HYPER_PARAMS}
+    hparams[hp.HParam('hyperbolic', hp.Discrete((True, False)))] =  args.hyperbolic
 
     log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     if args.debug:
@@ -254,10 +270,11 @@ if __name__ == "__main__":
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     num_batches = len(pick_generator_train_gen)
     tensorboard_period = num_batches // 32
-    draftbots = DraftBot(num_items=len(card_ratings), embed_dims=args.embed_dims,
-                         contrastive_loss_weight=args.contrastive_loss_weight, seen_dims=args.seen_dims, picked_dims=args.picked_dims,
-                         dropout_picked_rate=args.dropout_picked, dropout_seen_rate=args.dropout_seen, dropout_dense_rate=args.dropout_dense,
-                         hyperbolic=args.hyperbolic, margin=args.margin, summary_period=tensorboard_period * 8, name='DraftBot')
+    draftbots_kwargs = {param["name"]: getattr(args, param["name"]) for param in HYPER_PARAMS}
+    del draftbots_kwargs["batch_size"]
+    del draftbots_kwargs["learning_rate"]
+    draftbots = DraftBot(num_items=len(card_ratings), summary_period=tensorboard_period, name='DraftBot',
+                         **draftbots_kwargs)
     latest = tf.train.latest_checkpoint(output_dir)
     learning_rate = args.learning_rate or 0.001
     # learning_rate = ExponentialCyclingLearningRate(maximal_learning_rate=learning_rate, minimal_learning_rate=learning_rate / 64,
@@ -286,12 +303,7 @@ if __name__ == "__main__":
         # if args.learning_rate:
             # tf.keras.backend.set_value(draftbots.optimizer.lr, args.learning_rate)
     # tf.keras.backend.set_value(draftbots.oracle_weights, [[[5, 5, 5, 5, 5, 5] for _ in range(15)] for _ in range(3)])
-    draftbots.compile(optimizer=opt)
-    hparams = {
-        HP_BATCH_SIZE: args.batch_size,
-        HP_LEARNING_RATE: args.learning_rate or 0.001,
-        HP_EMBED_DIMS: args.embed_dims,
-    }
+    draftbots.compile(optimizer=opt, loss=lambda y_true, y_pred: 0.0)
 
     print('Starting training')
     callbacks = []
