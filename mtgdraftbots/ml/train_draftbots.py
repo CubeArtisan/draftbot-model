@@ -12,11 +12,8 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 import zstandard as zstd
-# import tensorflow_addons as tfa
 from tensorboard.plugins.hparams import api as hp
-from tensorboard.plugins import projector
 
-# from src.generated.draftbot_generator import DraftPickGenerator
 from mtgdraftbots.ml.callbacks import DynamicLearningRateCallback
 from mtgdraftbots.ml.draftbots import DraftBot
 
@@ -49,7 +46,7 @@ def load_npy_to_tensor(path):
 
 
 class PickGenerator(tf.keras.utils.Sequence):
-    def __init__(self, batch_size, folder):
+    def __init__(self, batch_size, folder, epochs_per_completion, seed=37):
         with open(folder / 'counts.json') as count_file:
             counts = json.load(count_file)
             pair_count = counts['pairs']
@@ -63,17 +60,22 @@ class PickGenerator(tf.keras.utils.Sequence):
         self.coords = load_npy_to_tensor(folder/'coords.npy.zstd')
         self.coord_weights = load_npy_to_tensor(folder/'coord_weights.npy.zstd')
         self.y_idx = load_npy_to_tensor(folder/'y_idx.npy.zstd')
-        self.rng = np.random.default_rng()
+        self.rng = np.random.Generator(np.random.PCG64(seed))
         self.shuffled_indices = np.arange(self.pair_count)
+        self.epoch_count = -1
+        self.epochs_per_completion = epochs_per_completion
         self.on_epoch_end()
 
     def __len__(self):
-        return self.pair_count // self.batch_size
+        return self.pair_count // self.batch_size // self.epochs_per_completion
 
     def on_epoch_end(self):
-        self.rng.shuffle(self.shuffled_indices)
+        self.epoch_count += 1
+        if self.epoch_count % self.epochs_per_completion == 0:
+            self.rng.shuffle(self.shuffled_indices)
 
     def __getitem__(self, idx):
+        idx += (self.epoch_count % self.epochs_per_completion) * len(self)
         indices = self.shuffled_indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         pairs = self.pairs[indices]
         context_idxs = self.context_idxs[indices]
@@ -169,11 +171,18 @@ if __name__ == "__main__":
         {"name": 'seen_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
          "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make seen synergies uniformly distributed.'},
         {"name": 'margin', "type": float, "default": 1.0, "choices": [Range(0.0, 1e+02)],
-         "range": hp.RealInterval(0.0, 1e+02), "help": 'The minimum amount the score of the correct option should win by.'}
+         "range": hp.RealInterval(0.0, 1e+02), "help": 'The minimum amount the score of the correct option should win by.'},
+        {"name": 'picked_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of picked contextual rating close to that of a uniform distribution.'},
+        {"name": 'seen_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of seen contextual rating close to that of a uniform distribution.'},
+        {"name": 'picked_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the picked contextual rating distances.'},
+        {"name": 'seen_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the seen contextual rating distances.'},
     )
 
     parser.add_argument('--epochs', '-e', type=int, required=True, help="The maximum number of epochs to train for")
-    parser.add_argument('--runtime', type=int, default=None, help='Number of minutes to train for.')
     parser.add_argument('--name', '-o', '-n', type=str, required=True, help="The name to save this model under.")
     parser.add_argument('--seed', type=int, default=37, help='The random seed to initialize things with to improve reproducibility.')
     for param in HYPER_PARAMS:
@@ -196,7 +205,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
     hparams = {hp.HParam(param["name"], param["range"]): getattr(args, param["name"]) for param in HYPER_PARAMS}
     hparams[hp.HParam('hyperbolic', hp.Discrete((True, False)))] =  args.hyperbolic
+    tf.random.set_seed(args.seed)
 
+    print('Loading card data for seeding weights.')
+    with open('data/maps/int_to_card.json', 'r') as cards_file:
+        cards_json = json.load(cards_file)
+        card_ratings = [-1] + [(c.get('elo', 1200) / 1200) - 1  for c in cards_json]
+        blank_embedding = [1 for _ in range(64)]
+        card_names = [''] + [c['name'] for c in cards_json]
+
+    print('Creating the pick Datasets.')
+    train_epochs_per_cycle = 1
+    pick_generator_train = PickGenerator(args.batch_size, Path('data/training_parsed_picks'), train_epochs_per_cycle, args.seed)
+    print(f"There are {len(pick_generator_train):,} training batches")
+    pick_generator_test = PickGenerator(args.batch_size, Path('data/validation_parsed_picks'), 1, args.seed)
+    print(f"There are {len(pick_generator_test):,} validation batches")
     log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     if args.debug:
         log_dir = "logs/debug/"
@@ -218,32 +241,44 @@ if __name__ == "__main__":
         tf.keras.mixed_precision.set_global_policy('mixed_float16')
     print('use_xla', args.use_xla)
     tf.config.optimizer.set_jit(args.use_xla)
-    tf.config.optimizer.set_experimental_options=({
-        'layout_optimizer': True,
-        'constant_folding': True,
-        'shape_optimization': True,
-        'remapping': True,
-        'arithmetic_optimization': True,
-        'dependency_optimization': True,
-        'loop_optimization': True,
-        'function_optimization': True,
-        'debug_stripper': not args.debug,
-        'disable_model_pruning': False,
-        'scoped_allocator_optimization': True,
-        'pin_to_host_optimization': True,
-        'implementation_selector': True,
-        'disable_meta_optimizer': False,
-        'min_graph_nodes': 1,
-    })
+    if args.debug:
+        tf.config.optimizer.set_experimental_options=({
+            'layout_optimizer': True,
+            'constant_folding': True,
+            'shape_optimization': True,
+            'remapping': True,
+            'arithmetic_optimization': True,
+            'dependency_optimization': True,
+            'loop_optimization': True,
+            'function_optimization': True,
+            'debug_stripper': False,
+            'disable_model_pruning': True,
+            'scoped_allocator_optimization': True,
+            'pin_to_host_optimization': True,
+            'implementation_selector': True,
+            'disable_meta_optimizer': True,
+            'min_graph_nodes': 1,
+        })
+    else:
+        tf.config.optimizer.set_experimental_options=({
+            'layout_optimizer': True,
+            'constant_folding': True,
+            'shape_optimization': True,
+            'remapping': True,
+            'arithmetic_optimization': True,
+            'dependency_optimization': True,
+            'loop_optimization': True,
+            'function_optimization': True,
+            'debug_stripper': True,
+            'disable_model_pruning': False,
+            'scoped_allocator_optimization': True,
+            'pin_to_host_optimization': True,
+            'implementation_selector': True,
+            'disable_meta_optimizer': False,
+            'min_graph_nodes': 1,
+        })
     tf.config.threading.set_intra_op_parallelism_threads(32)
     tf.config.threading.set_inter_op_parallelism_threads(32)
-
-    print('Loading card data for seeding weights.')
-    with open('data/maps/int_to_card.json', 'r') as cards_file:
-        cards_json = json.load(cards_file)
-        card_ratings = [-1] + [(c.get('elo', 1200) / 1200) - 1  for c in cards_json]
-        blank_embedding = [1 for _ in range(64)]
-        card_names = [''] + [c['name'] for c in cards_json]
 
     metadata = os.path.join(log_dir, 'metadata.tsv')
     with open(metadata, "w") as f:
@@ -252,28 +287,16 @@ if __name__ == "__main__":
         for i, card in enumerate(cards_json):
             f.write(f'{i+1}\t"{card["name"]}"\t{"".join(sorted(card.get("color_identity")))}\t{card.get("type")}\n')
 
-    print('Creating the pick Datasets.')
-    pick_generator_train_gen = PickGenerator(args.batch_size, Path('data/training_parsed_picks'))
-    pick_generator_train = pick_generator_train_gen
-    # pick_generator_train = tf.data.Dataset.from_generator(pick_generator_train_gen, output_signature=(tf.TensorSpec(shape=(2,), dtype=tf.int32), tf.TensorSpec(shape=(320,), dtype=tf.int32), tf.TensorSpec(shape=(640,), dtype=tf.int32), tf.TensorSpec(shape=(4, 2,), dtype=tf.int32), tf.TensorSpec(shape=(4,), dtype=tf.float32), tf.TensorSpec(shape=(), dtype=tf.int32)))\
-    #     .shuffle(2 ** 20).batch(args.batch_size, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
-    pick_generator_test_gen = PickGenerator(args.batch_size, Path('data/validation_parsed_picks'))
-    pick_generator_test = pick_generator_test_gen
-    # pick_generator_test = tf.data.Dataset.from_generator(pick_generator_test_gen, output_signature=(tf.TensorSpec(shape=(2,), dtype=tf.int32), tf.TensorSpec(shape=(320,), dtype=tf.int32), tf.TensorSpec(shape=(640,), dtype=tf.int32), tf.TensorSpec(shape=(4, 2,), dtype=tf.int32), tf.TensorSpec(shape=(4,), dtype=tf.float32), tf.TensorSpec(shape=(), dtype=tf.int32)))\
-    #     .shuffle(2 ** 20).batch(args.batch_size, drop_remainder=True, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
-    # pick_generator_train = DraftPickGenerator(args.batch_size, args.num_workers, args.seed, "data/parsed_picks/training/")
-    # print(f"There are {len(pick_generator_train):,} training batches")
-    # pick_generator_test = DraftPickGenerator(args.batch_size, args.num_workers, args.seed, "data/parsed_picks/validation/")
-    # print(f"There are {len(pick_generator_test):,} validation batches")
     print('Loading DraftBot model.')
     output_dir = f'././ml_files/{args.name}/'
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    num_batches = len(pick_generator_train_gen)
-    tensorboard_period = num_batches // 32
+    num_batches = len(pick_generator_train)
+    tensorboard_period = num_batches // 20
     draftbots_kwargs = {param["name"]: getattr(args, param["name"]) for param in HYPER_PARAMS}
     del draftbots_kwargs["batch_size"]
     del draftbots_kwargs["learning_rate"]
-    draftbots = DraftBot(num_items=len(card_ratings), summary_period=tensorboard_period, name='DraftBot',
+    draftbots_kwargs["hyperbolic"] = args.hyperbolic
+    draftbots = DraftBot(num_items=len(card_ratings), summary_period=tensorboard_period * 4, name='DraftBot',
                          **draftbots_kwargs)
     latest = tf.train.latest_checkpoint(output_dir)
     learning_rate = args.learning_rate or 0.001
@@ -293,16 +316,7 @@ if __name__ == "__main__":
         tf.compat.v1.mixed_precision.enable_mixed_precision_graph_rewrite(opt)
     if latest is not None:
         print('Loading Checkpoint.')
-        # draftbots.load_weights(latest)
-        # draftbots.compile()
-        # draftbots.save_weights(latest)
-        # draftbots = DraftBot(card_ratings, random_embeddings, args.batch_size, l1_loss_weight=args.l1_weight,
-        #                      l2_loss_weight=args.l2_weight, embed_dims=args.embed_dims, summary_period=tensorboard_period * 16,
-        #                      num_heads=args.num_heads, name='DraftBots')
         draftbots.load_weights(latest)
-        # if args.learning_rate:
-            # tf.keras.backend.set_value(draftbots.optimizer.lr, args.learning_rate)
-    # tf.keras.backend.set_value(draftbots.oracle_weights, [[[5, 5, 5, 5, 5, 5] for _ in range(15)] for _ in range(3)])
     draftbots.compile(optimizer=opt, loss=lambda y_true, y_pred: 0.0)
 
     print('Starting training')
@@ -326,13 +340,9 @@ if __name__ == "__main__":
             save_freq='epoch')
         callbacks.append(mcp_callback)
         callbacks.append(cp_callback)
-    # if args.runtime:
-    #     print(f'Running for {args.runtime} minutes.')
-    #     ts_callback = tfa.callbacks.TimeStopping(args.runtime * 60)
-    #     callbacks.append(ts_callback)
     nan_callback = tf.keras.callbacks.TerminateOnNaN()
-    es_callback = tf.keras.callbacks.EarlyStopping(monitor='accuracy', patience=16,
-                                                   mode='max', restore_best_weights=True, verbose=True)
+    es_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=4, min_delta=0.01,
+                                                   mode='min', restore_best_weights=True, verbose=True)
     tb_callback = TensorBoardFix(log_dir=log_dir, histogram_freq=1, write_graph=True,
                                  update_freq=tensorboard_period, embeddings_freq=None,
                                  profile_batch=0 if args.debug or not args.profile else (num_batches // 2 - 16, num_batches // 2 + 16))
@@ -341,22 +351,14 @@ if __name__ == "__main__":
     # callbacks.append(es_callback)
     callbacks.append(tb_callback)
     callbacks.append(hp_callback)
-    # tf.summary.experimental.set_step(args.starting_step)
-    # with pick_generator_train:
-    #     with pick_generator_test:
     draftbots.fit(
         pick_generator_train,
         validation_data=pick_generator_test,
-        # GeneratorWrapper(pick_generator_train, len(card_ratings), True),
-        # validation_data=GeneratorWrapper(pick_generator_test, len(card_ratings), False),
+        validation_freq=train_epochs_per_cycle,
         epochs=args.epochs,
-        # steps_per_epoch=len(pick_generator_train_gen),
-        # validation_steps=len(pick_generator_test_gen),
         callbacks=callbacks,
         verbose=1,
-        # use_multiprocessing=True,
-        # workers=4,
-        # max_queue_size=2**10,
+        max_queue_size=2**8,
     )
     if not args.debug:
         print('Saving final model.')

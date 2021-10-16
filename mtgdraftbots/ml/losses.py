@@ -1,48 +1,38 @@
 import tensorflow as tf
 
-@tf.function
-def get_triangular_arr(matrix, name=None):
-    with tf.name_scope(name or 'GetTriangularVector') as scope:
-        matrix = tf.linalg.band_part(matrix, -1, 0, name='lower_triangular')
-        # assuming square matrix
-        n = tf.shape(matrix)[0]
-        m = tf.cast(n * (n + 1) / 2, dtype=tf.int32)
-        # This gets the full row at the bottom
-        initial_elements = tf.reverse(matrix[-1, :-1], axis=[0])
-        triangular_portion = matrix[..., :-1, :]
-        # This makes an upper triangular version where the last row of the lower is on the right of the first row
-        rotated_triangular_portion = tf.reverse(tf.reverse(triangular_portion, axis=[1]), axis=[0])
-        consolidated = tf.reshape(triangular_portion + rotated_triangular_portion, (n * (n - 1),), name='consolidated')
-        result = tf.concat([initial_elements, consolidated[:m - n]], axis=-1, name=scope)
-        return result
-
-
-@tf.function
-def uniformity_loss2(arr, level, name='UniformityLoss'):
+# @tf.function
+def uniformity_loss(arr, bins, window_size, range_lower=0, range_upper=1, name='UniformityLoss'):
     with tf.name_scope(name) as scope:
-        flat_arr = tf.reshape(arr, (-1,), 'flat_arr')
-        diffs = tf.abs(tf.expand_dims(flat_arr, 1) - tf.expand_dims(flat_arr, 0), name='diffs')
-        tri_diffs = get_triangular_arr(diffs, name='tri_diffs')
-        summed = tf.math.reduce_sum(tri_diffs, name='summed')
-        uniformity = tf.cond(summed > 0, lambda: tf.linalg.norm(tri_diffs / summed), lambda: 0.0)
-        dimensionality = tf.cast(tf.size(flat_arr, out_type=tf.int64), dtype=tf.float32, name='dimensionality')
-        return tf.math.multiply(uniformity, dimensionality, name=scope)
-
-
-@tf.function
-def uniformity_loss(arr, bins, window_size):
-    results = []
-    count = tf.cast(tf.size(arr, out_type=tf.int64), dtype=arr.dtype)
-    with tf.experimental.async_scope():
-        inv_bins = tf.constant(1 / bins, dtype=arr.dtype)
-        expected_count =count * inv_bins
-        for i in range(1 - window_size, bins):
-            lower_bound = tf.math.maximum(tf.constant(i, dtype=arr.dtype) * inv_bins, 0.0)
-            upper_bound = tf.math.minimum(tf.constant(i + window_size, dtype=arr.dtype) * inv_bins, 1.0)
-            filter_cond = tf.math.logical_and(lower_bound <= arr, arr <= upper_bound)
-            trimmed = tf.where(filter_cond, arr, 0)
-            num_filtered = tf.reduce_sum(tf.cast(filter_cond, dtype=arr.dtype))
-            result = tf.cond(num_filtered > 0, lambda: tf.math.abs(tf.math.reduce_sum(trimmed) / num_filtered - (lower_bound + upper_bound) / 2), lambda: tf.constant(0, dtype=arr.dtype))
-            results.append(result)
-    stddev_diff = tf.math.abs(tf.math.reduce_std(arr) - tf.math.sqrt(1 / 12))
-    return sum(results) + stddev_diff, stddev_diff
+        results = []
+        range_size = tf.constant(range_upper - range_lower, dtype=arr.dtype, name='range_size')
+        inv_bins = tf.constant((range_upper - range_lower) / bins, dtype=arr.dtype, name='inv_bins')
+        window_size_const = tf.constant(window_size, dtype=arr.dtype, name='window_size')
+        const_lower = tf.constant(range_lower, dtype=arr.dtype, name='range_lower')
+        const_upper = tf.constant(range_lower, dtype=arr.dtype, name='range_upper')
+        const_zero = tf.constant(0, dtype=arr.dtype, name='const_zero')
+        const_one = tf.constant(1, dtype=arr.dtype, name='const_one')
+        const_two = tf.constant(2, dtype=arr.dtype, name='const_two')
+        with tf.experimental.async_scope():
+            for i in range(1 - window_size, bins):
+                with tf.name_scope(f'bin_{i}') as scope_inner:
+                    const_i = tf.constant(i, dtype=arr.dtype, name=f'i')
+                    lower_bound = tf.math.add(tf.math.maximum(tf.math.multiply(const_i, inv_bins, name='lower_bound_unbounded'),
+                                                              const_zero, name='lower_bound_unshifted'),
+                                              const_lower, name='lower_bound')
+                    upper_bound = tf.math.add(tf.math.minimum(tf.math.multiply(tf.math.add(const_i, window_size_const, name='high_bin_number'),
+                                                                               inv_bins, name='upper_bound_unbounded'),
+                                                              range_size, name='upper_bound_unshifted'),
+                                              const_lower, name='upper_bound')
+                    filter_cond = tf.math.logical_and(lower_bound <= arr, arr <= upper_bound, name='filter_cond')
+                    trimmed = tf.where(filter_cond, arr, tf.zeros_like(arr), name='trimmed')
+                    num_filtered = tf.reduce_sum(tf.cast(filter_cond, dtype=arr.dtype, name='float_filter_cond'), name='num_filtered')
+                    sum_trimmed = tf.math.reduce_sum(trimmed, name='sum_trimmed')
+                    mean_trimmed = tf.math.divide_no_nan(sum_trimmed, num_filtered, name='mean_trimmed')
+                    mean_bound = tf.math.reduce_mean([lower_bound, upper_bound], name='mean_bound')
+                    abs_error_mean = tf.math.abs(tf.math.subtract(mean_trimmed, mean_bound, 'error_mean'), name=scope_inner)
+                    results.append(abs_error_mean)
+        stddev = tf.math.reduce_std(arr, name='stddev')
+        stddev_diff = tf.math.abs(tf.math.subtract(tf.math.multiply(tf.math.sqrt(tf.constant(12, dtype=arr.dtype, name='twelve')),
+                                                                    stddev, name='scaled_stddev'),
+                                                   range_size, name='stddev_diff'), name='stddev_diff_abs')
+        return tf.math.add(tf.math.reduce_sum(results, name='total_abs_error_mean'), stddev_diff, name=scope), stddev
