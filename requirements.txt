@@ -17,6 +17,7 @@ grpcio==1.39.0
 gviz-api==1.9.0
 h5py==3.1.0
 idna==3.2
+jsonslicer==0.1.7
 keras-nightly==2.8.0.dev2021100807
 Keras-Preprocessing==1.1.2
 libclang==11.1.0
@@ -41,9 +42,9 @@ tensorboard-plugin-profile==2.5.0
 tensorboard-plugin-wit==1.8.0
 tensorflow-io-gcs-filesystem==0.21.0
 termcolor==1.1.0
-tf-estimator-nightly==2.7.0.dev2021090408
-tf-nightly==2.8.0.dev20211008
-tfa-nightly==0.15.0.dev20210903140140
+tf-estimator-nightly==2.8.0.dev2021102008
+tf-nightly==2.8.0.dev20211020
+tfa-nightly==0.15.0.dev20211014164307
 tfp-nightly==0.15.0.dev20211008
 tqdm==4.62.2
 typeguard==2.12.1

@@ -7,13 +7,15 @@ from mtgdraftbots.ml.utils import dropout
 
 
 class SetEmbedding(tf.keras.layers.Layer):
-    def __init__(self, num_items, embed_dims, final_dims=None, item_dropout_rate=0.0, dense_dropout_rate=0.0, **kwargs):
+    def __init__(self, num_items, embed_dims, final_dims=None, item_dropout_rate=0.0, dense_dropout_rate=0.0,
+                 activation='selu', **kwargs):
         super(SetEmbedding, self).__init__(**kwargs)
         self.num_items = num_items
         self.embed_dims = embed_dims
         self.item_dropout_rate = item_dropout_rate
         self.dense_dropout_rate = dense_dropout_rate
         self.final_dims = final_dims or embed_dims
+        self.activation = activation
 
     def get_config(self):
         config = super(SetEmbedding, self).get_config()
@@ -23,18 +25,20 @@ class SetEmbedding(tf.keras.layers.Layer):
             "item_dropout_rate": self.item_dropout_rate,
             "dense_dropout_rate": self.dense_dropout_rate,
             "final_dims": self.final_dims,
+            "activation": self.activation
         })
         return config
 
     def build(self, input_shape):
         self.embeddings = self.add_weight('item_embeddings', shape=(self.num_items - 1, self.embed_dims),
-                                          initializer=tf.random_normal_initializer(0, 1 / self.embed_dims / self.embed_dims),
+                                          initializer=tf.random_normal_initializer(0, 1 / self.embed_dims / self.embed_dims,
+                                                                                   seed=241),
                                           trainable=True)
-        self.upcast_2x = tf.keras.layers.Dense(2 * self.embed_dims, activation='relu', use_bias=True, name='upcast_2x')
-        self.upcast_4x = tf.keras.layers.Dense(4 * self.embed_dims, activation='relu', use_bias=True, name='upcast_4x')
+        self.upcast_2x = tf.keras.layers.Dense(2 * self.embed_dims, activation=self.activation, use_bias=True, name='upcast_2x')
+        self.upcast_4x = tf.keras.layers.Dense(4 * self.embed_dims, activation=self.activation, use_bias=True, name='upcast_4x')
         self.downcast_final = tf.keras.layers.Dense(self.final_dims, activation='linear', use_bias=True, name='downcast_final')
 
-    def call(self, inputs, training=False, mask=None):
+    def call(self, inputs, training=False):
         embeddings = tf.concat([tf.zeros((1, self.embed_dims), dtype=self.compute_dtype), self.embeddings], 0, name='embeddings')
         dropped_inputs = dropout(inputs, self.item_dropout_rate, training=training, name='inputs_dropped')
         item_embeds = tf.gather(embeddings, dropped_inputs, name='item_embeds')
@@ -48,7 +52,7 @@ class SetEmbedding(tf.keras.layers.Layer):
 class ContextualRating(tf.keras.layers.Layer):
     def __init__(self, num_items, embed_dims, context_dims, hyperbolic=False, item_dropout_rate=0.0,
                  dense_dropout_rate=0.0, uniformity_weight=0.0, distance_l2_weight=1/256,
-                 variance_weight=0.01, summary_period=1024, **kwargs):
+                 variance_weight=0.01, activation='selu', summary_period=1024, **kwargs):
         super(ContextualRating, self).__init__(**kwargs)
         self.num_items = num_items
         self.embed_dims = embed_dims
@@ -59,6 +63,7 @@ class ContextualRating(tf.keras.layers.Layer):
         self.uniformity_weight = uniformity_weight
         self.distance_l2_weight = distance_l2_weight
         self.variance_weight = variance_weight
+        self.activation = activation
         self.summary_period = summary_period
 
     def get_config(self):
@@ -73,6 +78,7 @@ class ContextualRating(tf.keras.layers.Layer):
             "uniformity_weight": self.uniformity_weight,
             "distance_l2_weight": self.distance_l2_weight,
             "variance_weight": self.variance_weight,
+            "activation": self.activation,
             "summary_period": self.summary_period,
         })
         return config
@@ -80,17 +86,32 @@ class ContextualRating(tf.keras.layers.Layer):
     def build(self, input_shape):
         if self.hyperbolic:
             # self.item_curvature = tf.constant(1, shape=(), dtype=self.compute_dtype)
-            self.item_curvature = self.add_weight('item_curvature', shape=(), initializer=tf.constant_initializer(1), trainable=True)
-            self.item_embeddings = tf.keras.layers.Embedding(self.num_items, self.embed_dims - 1, mask_zero=True, input_length=input_shape[0][1], name='item_embeddings')
-            self.pool_embedding = SetHyperEmbedding(self.num_items, self.context_dims, final_dims=self.embed_dims, item_dropout_rate=self.item_dropout_rate, dense_dropout_rate=self.dense_dropout_rate, name='pool_set_embedding')
-            self.distance = lambda x, y: distance_hyper(x, y, tf.math.softplus(self.item_curvature), name='distances')
+            self.item_curvature = self.add_weight('item_curvature', shape=(),
+                                                  initializer=tf.constant_initializer(8), trainable=True)
+            self.item_embeddings = tf.keras.layers.Embedding(self.num_items, self.embed_dims - 1,
+                                                             mask_zero=True,
+                                                             input_length=input_shape[0][1],
+                                                             name='item_embeddings')
+            self.pool_embedding = SetHyperEmbedding(self.num_items, self.context_dims,
+                                                    final_dims=self.embed_dims,
+                                                    item_dropout_rate=self.item_dropout_rate,
+                                                    dense_dropout_rate=self.dense_dropout_rate,
+                                                    activation=self.activation,
+                                                    name='pool_set_embedding')
+            # We need to square this to prevent the derivative from exploding as distance goes to 0.
+            self.distance = lambda x, y: tf.math.square(distance_hyper(x, y, tf.math.softplus(self.item_curvature),
+                                                                       name='distances'),
+                                                        name='distances_squared')
         else:
             self.item_embeddings = tf.keras.layers.Embedding(self.num_items, self.embed_dims, mask_zero=True,
                                                              input_length=input_shape[0][1], name='item_embeddings')
             self.pool_embedding = SetEmbedding(self.num_items, self.context_dims, final_dims=self.embed_dims,
                                                item_dropout_rate=self.item_dropout_rate,
-                                               dense_dropout_rate=self.dense_dropout_rate, name='pool_set_embedding')
-            self.distance = lambda x, y: tf.norm(x - y, axis=-1, name='distances')
+                                               dense_dropout_rate=self.dense_dropout_rate,
+                                               activation=self.activation, name='pool_set_embedding')
+            self.distance = lambda x, y: tf.math.reduce_sum(tf.math.square(tf.math.subtract(x, y, name='vec_diffs'),
+                                                                           name='squared_differences'),
+                                                            axis=-1, name='squared_distances')
 
     def call(self, inputs, training=False):
         item_indices, context_indices = inputs
@@ -102,7 +123,9 @@ class ContextualRating(tf.keras.layers.Layer):
             item_embeds = self.item_embeddings(item_indices)
             context_embeds = self.pool_embedding(context_indices, training=training)
         distances = self.distance(item_embeds, tf.expand_dims(context_embeds, 1))
-        nonlinear_distances = tf.math.subtract(tf.constant(1, dtype=self.compute_dtype), tf.math.tanh(distances, name='nonlinear_distances_neg'), name='nonlinear_distances')
+        one = tf.constant(1, dtype=self.compute_dtype)
+        nonlinear_distances = tf.math.divide(one, tf.math.add(one, distances, name='distances_incremented'), name='nonlinear_distances')
+        # nonlinear_distances = tf.math.subtract(tf.constant(1, dtype=self.compute_dtype), tf.math.tanh(distances, name='nonlinear_distances_neg'), name='nonlinear_distances')
         if self.variance_weight > 0:
             variance_loss = tf.abs(tf.math.subtract(tf.constant(1, dtype=self.compute_dtype),
                                                   tf.math.multiply(tf.constant(12, dtype=self.compute_dtype, name='inverse_unit_variance'),
@@ -150,7 +173,8 @@ class ItemRating(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         self.item_rating_logits = self.add_weight('item_rating_logits', shape=(self.num_items - 1,),
-                                                  initializer=tf.random_normal_initializer(0, 0.25),
+                                                  initializer=tf.random_normal_initializer(-0.8, 0.1,
+                                                                                           seed=743),
                                                   trainable=True)
 
     def call(self, inputs, training=False):
@@ -166,7 +190,6 @@ class ItemRating(tf.keras.layers.Layer):
 
         # Logging for Tensorboard
         if training and tf.summary.experimental.get_step() % self.summary_period == 0:
-            tf.summary.histogram('weights/item_rating_logits', self.item_rating_logits)
             tf.summary.histogram('weights/item_ratings', item_ratings)
         return ratings
 
@@ -195,14 +218,15 @@ class TimeVaryingLinear(tf.keras.layers.Layer):
         return config
 
     def call(self, inputs, training=False):
-        sub_layer_args = [tuple(inputs[i] for i in arg_map) for arg_map in self.sub_layer_arg_maps]
         coords, coord_weights = inputs[-2:]
         sub_layer_weights_orig = tf.math.softplus(self.sub_layer_weights, name='sub_layer_weights')
         sub_layer_weight_values = tf.gather_nd(sub_layer_weights_orig, coords, name='sub_layer_weight_values')
         sub_layer_weights = tf.einsum('...xo,...x->...o', sub_layer_weight_values, coord_weights, name='sub_layer_weights')
+
+        sub_layer_args = [tuple(inputs[i] for i in arg_map) for arg_map in self.sub_layer_arg_maps]
         sub_layer_values_pre_stack = tuple(layer(args, training=training) for layer, args in zip(self.sub_layers, sub_layer_args))
         sub_layer_values = tf.stack(sub_layer_values_pre_stack, axis=-1, name='sub_layer_values')
-        scores = tf.einsum('...io,...o->...i', sub_layer_values, sub_layer_weights)
+        scores = tf.einsum('...io,...o->...i', sub_layer_values, sub_layer_weights, name='scores')
 
         # Logging for Tensorboard
         if training and tf.summary.experimental.get_step() % self.summary_period == 0:
@@ -222,7 +246,8 @@ class DraftBot(tf.keras.models.Model):
                  dropout_dense=0.0, hyperbolic=False, margin=1, rating_uniformity_weight=1.0,
                  picked_synergy_uniformity_weight=0.1, seen_synergy_uniformity_weight=0.1,
                  log_loss_weight=1.0, picked_variance_weight=0.0, picked_distance_l2_weight=0.0,
-                 seen_variance_weight=0.0, seen_distance_l2_weight=0.0, summary_period=1024, **kwargs):
+                 seen_variance_weight=0.0, seen_distance_l2_weight=0.0, activation='selu',
+                 summary_period=1024, **kwargs):
         kwargs.update({'dynamic': False})
         super(DraftBot, self).__init__(**kwargs)
         self.num_items = num_items
@@ -243,6 +268,7 @@ class DraftBot(tf.keras.models.Model):
         self.picked_distance_l2_weight = picked_distance_l2_weight
         self.seen_variance_weight = seen_variance_weight
         self.seen_distance_l2_weight = seen_distance_l2_weight
+        self.activation = activation
         self.summary_period = summary_period
 
     def get_config(self):
@@ -266,6 +292,7 @@ class DraftBot(tf.keras.models.Model):
             "picked_distance_l2_weight": self.picked_distance_l2_weight,
             "seen_variance_weight": self.seen_variance_weight,
             "seen_distance_l2_weight": self.seen_distance_l2_weight,
+            "activation": self.activation,
             "summary_period": self.summary_period,
         })
         return config
@@ -277,49 +304,95 @@ class DraftBot(tf.keras.models.Model):
                                                     uniformity_weight=self.picked_synergy_uniformity_weight,
                                                     variance_weight=self.picked_variance_weight,
                                                     distance_l2_weight=self.picked_distance_l2_weight,
-                                                    summary_period=self.summary_period, name='PickedSynergy')
+                                                    activation=self.activation,
+                                                    summary_period=self.summary_period, name='RatingFromPicked')
         seen_contextual_rating = ContextualRating(self.num_items, self.embed_dims, self.seen_dims,
                                                   hyperbolic=self.hyperbolic, item_dropout_rate=self.dropout_seen,
                                                   dense_dropout_rate=self.dropout_dense,
                                                   uniformity_weight=self.seen_synergy_uniformity_weight,
                                                   variance_weight=self.seen_variance_weight,
                                                   distance_l2_weight=self.seen_distance_l2_weight,
-                                                  summary_period=self.summary_period, name='SeenSynergy')
+                                                  activation=self.activation,
+                                                  summary_period=self.summary_period, name='RatingFromSeen')
         card_rating = ItemRating(self.num_items, uniformity_weight=self.rating_uniformity_weight,
-                                 summary_period=self.summary_period, name='CardRating')
+                                 summary_period=self.summary_period, name='Rating')
         self.time_varying = TimeVaryingLinear((card_rating, picked_contextual_rating, seen_contextual_rating),
                                               ((0,), (0, 1), (0, 2)), (3, 15), summary_period=self.summary_period,
                                               name='OracleCombination')
 
-    def call(self, inputs, training=False, mask=None):
+    def call(self, inputs, training=False):
         loss_dtype = tf.float32
-        scores = tf.cast(self.time_varying(inputs[:5], training=training), dtype=loss_dtype)
-        if len(inputs) > 5:
+        scores = tf.cast(self.time_varying(inputs[:5], training=training), dtype=loss_dtype, name='scores')
+        if len(inputs) == 6:
             y_idx = inputs[5]
-            log_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y_idx, logits=scores, name='log_losses')
-            self.add_loss(tf.math.multiply(tf.math.reduce_mean(log_losses, name='log_loss'),
-                                           tf.constant(self.log_loss_weight, dtype=loss_dtype, name='log_loss_weight'),
-                                           name='log_loss_weighted'))
-            self.add_metric(log_losses, name='log_loss')
-            fy_idx = tf.cast(y_idx, dtype=scores.dtype)
-            weight_0 = tf.math.subtract(tf.constant(1, dtype=loss_dtype),
-                                        tf.math.multiply(tf.constant(2, dtype=loss_dtype), fy_idx),
-                                        name='weight_0')
-            scaled = tf.math.multiply(tf.reshape(weight_0, (-1, 1)), scores, 'scaled_scores')
-            weights = tf.stack((-weight_0, weight_0), axis=-1, name='option_weights')
-            contrastive_pre_clip = tf.math.add(tf.constant(self.margin, dtype=scores.dtype),
-                                               tf.math.subtract(scaled[:, 1], scaled[:, 0], name='difference_of_scores'),
-                                               name='contrastive_pre_clip'),
-            contrastive_losses = tf.maximum(tf.constant(0, dtype=loss_dtype), contrastive_pre_clip,
-                                            name='contrastive_losses')
-            # if training and tf.summary.experimental.get_step() % self.summary_period == 0:
-            #     tf.summary.histogram(f'outputs/contrast_margins', contrastive_pre_clip)
-            #     tf.summary.histogram(f'outputs/contrastive_losses', contrastive_losses)
-            #     tf.summary.histogram(f'outputs/log_losses', log_losses)
-            self.add_loss(tf.math.multiply(tf.math.reduce_mean(contrastive_losses, name='contrastive_loss'),
-                                           tf.constant(self.contrastive_loss_weight, dtype=loss_dtype, name='contrastive_loss_weight'),
-                                           name='contrastive_loss_weighted'))
-            self.add_metric(contrastive_losses, name='contrastive_loss')
+            if self.log_loss_weight > 0:
+                log_losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y_idx, logits=scores, name='log_losses')
+                self.add_loss(tf.math.multiply(tf.math.reduce_mean(log_losses, name='log_loss'),
+                                               tf.constant(self.log_loss_weight, dtype=loss_dtype, name='log_loss_weight'),
+                                               name='log_loss_weighted'))
+                self.add_metric(log_losses, name='pairwise_log_loss')
+                if training and tf.summary.experimental.get_step() % self.summary_period == 0:
+                    tf.summary.histogram(f'outputs/log_losses_weighted', log_losses)
+            if self.contrastive_loss_weight > 0:
+                fy_idx = tf.cast(y_idx, dtype=scores.dtype)
+                weight_0 = tf.math.subtract(tf.constant(1, dtype=loss_dtype),
+                                            tf.math.multiply(tf.constant(2, dtype=loss_dtype), fy_idx),
+                                            name='weight_0')
+                scaled = tf.math.multiply(tf.reshape(weight_0, (-1, 1)), scores, 'scaled_scores')
+                weights = tf.stack((-weight_0, weight_0), axis=-1, name='option_weights')
+                contrastive_pre_clip = tf.math.add(tf.constant(self.margin, dtype=scores.dtype),
+                                                   tf.math.subtract(scaled[:, 1], scaled[:, 0], name='difference_of_scores'),
+                                                   name='contrastive_pre_clip'),
+                contrastive_losses = tf.maximum(tf.constant(0, dtype=loss_dtype), contrastive_pre_clip,
+                                                name='contrastive_losses')
+                self.add_loss(tf.math.multiply(tf.math.reduce_mean(contrastive_losses, name='contrastive_loss'),
+                                               tf.constant(self.contrastive_loss_weight, dtype=loss_dtype, name='contrastive_loss_weight'),
+                                               name='contrastive_loss_weighted'))
+                self.add_metric(contrastive_losses, name='contrastive_loss')
+                if training and tf.summary.experimental.get_step() % self.summary_period == 0:
+                    tf.summary.histogram(f'outputs/contrast_margins', contrastive_pre_clip)
+                    tf.summary.histogram(f'outputs/contrastive_losses', contrastive_losses)
             accuracy = tf.keras.metrics.sparse_categorical_accuracy(y_idx, scores)
-            self.add_metric(accuracy, name='accuracy')
+            self.add_metric(accuracy, name='pairwise_accuracy')
+        elif len(inputs) == 7:
+            chosen_idx= tf.reshape(inputs[5], (-1,), name='chosen_idx')
+            y_idx = tf.cast(inputs[6], dtype=loss_dtype, name='float_y_idx')
+            mask = tf.cast(inputs[0] > 0, dtype=loss_dtype, name='mask')
+            probs_with_zeros = tf.nn.softmax(scores, axis=-1, name='probs_with_zeros')
+            probs = tf.linalg.normalize(tf.math.multiply(probs_with_zeros, mask, name='masked_probs'),
+                                        ord=1, axis=-1, name='probs')[0]
+            prob_chosen = tf.gather(probs, chosen_idx, batch_dims=1, name='prob_chosen')
+            one = tf.constant(1, dtype=loss_dtype)
+            inv_prob_chosen = tf.math.subtract(one, prob_chosen,
+                                               name='inv_prob_chosen')
+            inv_y_idx = tf.math.subtract(one, y_idx, name='inv_y_idx')
+            log_losses = tf.math.add(tf.multiply(y_idx, tf.math.negative(tf.math.log(prob_chosen + 1e-04,
+                                                                                     name='log_prob'),
+                                                                         name='negative_log_prob'),
+                                                 name='log_loss_picked'),
+                                     tf.multiply(inv_y_idx, tf.math.negative(tf.math.log(inv_prob_chosen + 1e-04,
+                                                                                     name='log_inv_prob'),
+                                                                         name='negative_log_inv_prob'),
+                                                 name='log_loss_trashed'),
+                                     name='log_loss')
+            self.add_loss(tf.reduce_mean(log_losses, name='log_loss'))
+            self.add_metric(log_losses, 'pick_log_loss')
+            if tf.summary.experimental.get_step() % self.summary_period == 0:
+                tf.summary.histogram('outputs/probs', probs)
+                tf.summary.histogram('outputs/prob_chosen', prob_chosen)
+                tf.summary.histogram('outputs/log_losses', log_losses)
+            weight = tf.math.subtract(one, tf.math.multiply(tf.constant(2, dtype=loss_dtype), y_idx),
+                                      name='weight')
+            weight = tf.expand_dims(weight, -1)
+            weighted_mask = tf.math.multiply(weight, tf.math.subtract(mask, one, name='inv_mask'),
+                                             name='weighted_mask')
+            weighted_probs = tf.math.multiply(tf.math.add(probs, weighted_mask, name='shifted_probs'),
+                                              weight, name='weighted_probs')
+            top_1_accuracy = tf.keras.metrics.sparse_top_k_categorical_accuracy(chosen_idx, probs, 1)
+            top_2_accuracy = tf.keras.metrics.sparse_top_k_categorical_accuracy(chosen_idx, probs, 2)
+            top_3_accuracy = tf.keras.metrics.sparse_top_k_categorical_accuracy(chosen_idx, probs, 3)
+            self.add_metric(top_1_accuracy, 'accuracy_top_1')
+            self.add_metric(top_2_accuracy, 'accuracy_top_2')
+            self.add_metric(top_3_accuracy, 'accuracy_top_3')
+            scores = tf.math.multiply(scores, mask, name='masked_scores')
         return scores

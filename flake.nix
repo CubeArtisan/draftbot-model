@@ -18,7 +18,7 @@
       in
         {
           devShell = pkgs.mkShell {
-            name = "CubeCobraRecommender";
+            name = "mtgdraftbots-model";
             buildInputs = [
               pkgs.stdenv.cc.cc.lib
               pkgs.cudaPackages.cudatoolkit_11
@@ -28,6 +28,8 @@
               pkgs.python39Packages.python
               pkgs.cmake
               pkgs.ninja
+              pkgs.pkg-config
+              pkgs.yajl
             ];
 
             shellHook = ''

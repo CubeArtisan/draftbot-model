@@ -107,16 +107,47 @@ def expmap(vec, origin, curvature, name='HyperbolicExpMap'):
 # @tf.function
 def origin_hyper(curvature, dims, name='HyperbolicOrigin'):
     with tf.name_scope(name) as scope:
-        return tf.concat([tf.reshape(tf.math.sqrt(curvature, name='sqrt_curvature'), (1,)),
-                          tf.constant(0, dtype=curvature.dtype, shape=(dims - 1,))],
-                         0, name=scope)
+        return tf.math.multiply(tf.constant([1] + [0 for _ in range(dims - 1)], dtype=curvature.dtype),
+                                tf.math.sqrt(curvature, name='sqrt_curvature'), name=scope)
+
+
+def project_to_origin_tangent(vec, origin, curvature, name=None):
+    with tf.name_scope(name or 'ProjectHyperbolicTangent') as scope:
+        inner_scaled = tf.math.divide(inner_product_hyper(origin, vec, keepdims=True, name='inner'),
+                                      curvature, name='inner_scaled')
+        return tf.math.add(vec, tf.math.multiply(inner, origin))
+
+
+class DropoutHyperbolic(tf.keras.layers.Layer):
+    def __init__(self, rate, normalization=None, **kwargs):
+        super(DropoutHyperbolic, self).__init__(**kwargs)
+        self.rate = rate
+        self.normalization = normalization
+
+    def get_config(self):
+        config = super(DropoutHyperbolic, self).get_config()
+        config.update({
+            "rate": self.rate,
+            "normalization": self.normalization,
+        })
+        return config
+
+    def build(self, input_shape):
+        self.input_dims = input_shape[0][-1]
+
+    def call(self, inputs, training=False):
+        vecs, curvature = inputs
+        origin = origin_hyper(curvature, self.input_dims)
+        log_vecs = logmap(vecs, origin, curvature, name='log_vecs')
+        log_dropped_out = dropout(log_vecs, self.rate, scale=self.normalization, training=training,
+                                  name='log_dropped_out')
+        return expmap(log_dropped_out, origin, curvature, name=self.name)
 
 
 class DenseHyperbolic(tf.keras.layers.Layer):
-    def __init__(self, output_dims, dropout_rate=0.0, use_bias=True, activation='linear', **kwargs):
+    def __init__(self, output_dims, use_bias=True, activation='linear', **kwargs):
         super(DenseHyperbolic, self).__init__(**kwargs)
         self.output_dims = output_dims
-        self.dropout_rate = dropout_rate
         self.use_bias = use_bias
         self.activation = activation
 
@@ -124,7 +155,6 @@ class DenseHyperbolic(tf.keras.layers.Layer):
         config = super(DenseHyperbolic, self).__init__(**kwargs)
         config.update({
             "output_dims": self.output_dims,
-            "dropout_rate": self.dropout_rate,
             "use_bias": self.use_bias,
             "activation": self.activation
         })
@@ -139,47 +169,50 @@ class DenseHyperbolic(tf.keras.layers.Layer):
                                                   initializer=tf.random_normal_initializer(0, 0.01), trainable=True)
         self.activation_layer = tf.keras.layers.Activation(self.activation)
 
-    def call(self, inputs, training=True):
+    def call(self, inputs):
         vectors, in_curvature, out_curvature = inputs
         in_origin = origin_hyper(in_curvature, self.input_dims, name='in_origin')
         out_origin = origin_hyper(in_curvature, self.output_dims, name='out_origin')
         out_origin2 = origin_hyper(out_curvature, self.output_dims, name='out_origin2')
         tangent_vecs = logmap(vectors, origin=in_origin, curvature=in_curvature, name='tangent_vecs')
         weighted_vecs = tf.linalg.matmul(tangent_vecs, self.euclidean_dense, name='weighted_vecs')
+        mask_out = tf.constant([0] + [1 for _ in range(self.output_dims - 1)], dtype=self.compute_dtype, name='mask_out')
+        weighted_vecs = tf.math.multiply(mask_out, weighted_vecs, name='weighted_vecs_masked')
         if self.use_bias:
             hyper_weighted_vecs = expmap(weighted_vecs, origin=out_origin, curvature=in_curvature, name='hyper_weighted_vecs')
             # bias is in the tangent space of out_origin
             bias = tf.concat([tf.constant(0, dtype=self.compute_dtype, shape=(1,)), self.euclidean_bias], 0, name='bias')
             # weighted vecs is the logmap of hyper_weighted_vecs with origin out_origin
-            inner_num = inner_product_hyper(weighted_vecs, tf.expand_dims(bias, 0), keepdims=True, name='inner_weighted_vecs_bias')
+            inner_num = inner_product_hyper(weighted_vecs, tf.expand_dims(bias, 0, name='bias_expanded'),
+                                            keepdims=True, name='inner_weighted_vecs_bias')
             distance = distance_hyper(out_origin, hyper_weighted_vecs, in_curvature, keepdims=True, name='distance_hyper_weighted_vecs')
             summed_logs = tf.math.add(logmap(out_origin, origin=hyper_weighted_vecs, curvature=in_curvature, name='log_hyper_weighted_vecs'),
                                       weighted_vecs) # weighted vecs is the logmap of hyper_weighted_vecs with origin as out_origin
-            summed_logs_mult = tf.math.divide(inner_num, tf.math.multiply(distance, distance, name='distance_hyper_weighted_vecs_squared'),
+            summed_logs_mult = tf.math.divide(inner_num, tf.math.square(distance, name='distance_hyper_weighted_vecs_squared'),
                                               name='summed_logs_mult')
             bias_tangent = tf.subtract(bias, tf.math.multiply(summed_logs, summed_logs_mult, name='summed_logs_scaled'), name='bias_tangent')
             # bias_tangent is in the tangent space of hyper_weighted_vecs so we need to bring it into hyperbolic space.
             biased = expmap(bias_tangent, origin=hyper_weighted_vecs, curvature=in_curvature, name='biased')
             # now we can lower it into the tangent space of out_origin.
             biased_tangent = logmap(biased, origin=out_origin, curvature=in_curvature, name='biased_tangent')
-            removing_nans = tf.where(tf.math.reduce_all(hyper_weighted_vecs == out_origin, axis=-1, keepdims=True,
-                                                        name='hyper_weighted_vecs_match_origin'),
-                                     tf.expand_dims(bias, 0), biased_tangent, name='biased_tangent_no_nan')
-            return expmap(dropout(self.activation_layer(removing_nans), self.dropout_rate, scale=2, training=training, name='dropped_out_result'),
-                          origin=out_origin2, curvature=out_curvature, name=self.name)
-        else:
-            return expmap(dropout(self.activation_layer(weighted_vecs), self.dropout_rate, scale=2, training=training, name='dropped_out_result'),
-                          origin=out_origin2, curvature=out_curvature, name=self.name)
+            # removing_nans = tf.where(tf.math.reduce_all(hyper_weighted_vecs == out_origin, axis=-1, keepdims=True,
+            #                                             name='hyper_weighted_vecs_match_origin'),
+            #                          tf.expand_dims(bias, 0), biased_tangent, name='biased_tangent_no_nan')
+            weighted_vecs = tf.math.multiply(biased_tangent, mask_out, 'masked_biased_tangent')
+        return expmap(self.activation_layer(weighted_vecs), origin=out_origin2, curvature=out_curvature,
+                      name=self.name)
 
 
 class SetHyperEmbedding(tf.keras.layers.Layer):
-    def __init__(self, num_items, embed_dims, final_dims=None, item_dropout_rate=0.0, dense_dropout_rate=0.0, **kwargs):
+    def __init__(self, num_items, embed_dims, final_dims=None, item_dropout_rate=0.0, dense_dropout_rate=0.0,
+                 activation='selu', **kwargs):
         super(SetHyperEmbedding, self).__init__(**kwargs)
         self.num_items = num_items
         self.embed_dims = embed_dims
         self.item_dropout_rate = item_dropout_rate
         self.dense_dropout_rate = dense_dropout_rate
         self.final_dims = final_dims or embed_dims
+        self.activation = activation
 
     def get_config(self):
         config = super(SetHyperEmbedding, self).get_config()
@@ -189,6 +222,7 @@ class SetHyperEmbedding(tf.keras.layers.Layer):
             "item_dropout_rate": self.item_dropout_rate,
             "dense_dropout_rate": self.dense_dropout_rate,
             "final_dims": self.final_dims,
+            "activation": self.activation,
         })
         return config
 
@@ -196,22 +230,30 @@ class SetHyperEmbedding(tf.keras.layers.Layer):
         self.embeddings = self.add_weight('item_embeddings', shape=(self.num_items - 1, self.embed_dims - 1),
                                           initializer=tf.random_normal_initializer(0, 1 / self.embed_dims / self.embed_dims),
                                           trainable=True)
-        self.upcast_2x = DenseHyperbolic(2 * self.embed_dims, activation='relu', use_bias=False, dropout_rate=self.dense_dropout_rate, name='upcast_2x')
-        self.upcast_4x = DenseHyperbolic(4 * self.embed_dims, activation='relu', use_bias=False, dropout_rate=self.dense_dropout_rate, name='upcast_4x')
-        self.downcast_final = DenseHyperbolic(self.final_dims, activation='linear', use_bias=False, dropout_rate=self.dense_dropout_rate, name='downcast_final')
+        self.upcast_2x = DenseHyperbolic(2 * self.embed_dims, activation=self.activation, use_bias=True,
+                                         name='upcast_2x')
+        self.upcast_4x = DenseHyperbolic(4 * self.embed_dims, activation=self.activation, use_bias=True,
+                                         name='upcast_4x')
+        self.downcast_final = DenseHyperbolic(self.final_dims, activation='linear', use_bias=True,
+                                              name='downcast_final')
+        self.dense_dropout2 = DropoutHyperbolic(self.dense_dropout_rate, normalization=2, name='dense_dropout2')
+        self.dense_dropout4 = DropoutHyperbolic(self.dense_dropout_rate, normalization=2, name='dense_dropout4')
         self.initial_bias = self.add_weight('initial_bias', shape=(self.embed_dims - 1,),
                                             initializer=tf.random_normal_initializer(0, 1 / self.embed_dims / self.embed_dims),
                                             trainable=True)
 
-    def call(self, inputs, training=False, mask=None):
+    def call(self, inputs, training=False):
         indices, curvature = inputs
-        embeddings = tf.concat([tf.zeros((1, self.embed_dims - 1), dtype=self.compute_dtype), self.embeddings], 0, name='embeddings')
-        dropped_indices = dropout(indices, self.item_dropout_rate, training=training, name='dropped_indices')
+        embeddings = tf.concat([tf.constant(0, shape=(1, self.embed_dims - 1), dtype=self.compute_dtype),
+                                self.embeddings], 0, name='embeddings')
+        dropped_indices = dropout(indices, self.item_dropout_rate, scale=None, training=training, name='dropped_indices')
         item_embeds = tf.gather(embeddings, dropped_indices, name='item_embeds')
         summed_embeds = tf.math.reduce_sum(item_embeds, 1, name='summed_embeds')
         normalized_embeds = tf.math.l2_normalize(tf.math.add(summed_embeds, self.initial_bias, name='biased_embeds'),
                                                  axis=-1, epsilon=1e-04, name='normalized_embeds')
         hyper_embeds = to_hyper(normalized_embeds, curvature, name='hyper_embeds')
-        upcast_2x = self.upcast_2x((hyper_embeds, curvature, curvature), training=training)
-        upcast_4x = self.upcast_4x((upcast_2x, curvature, curvature), training=training)
-        return self.downcast_final((upcast_4x, curvature, curvature), training=training)
+        upcast_2x = self.dense_dropout2((self.upcast_2x((hyper_embeds, curvature, curvature)), curvature),
+                                       training=training)
+        upcast_4x = self.dense_dropout4((self.upcast_4x((upcast_2x, curvature, curvature)), curvature),
+                                       training=training)
+        return self.downcast_final((upcast_4x, curvature, curvature))
