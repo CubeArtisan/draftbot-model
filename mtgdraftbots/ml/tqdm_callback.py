@@ -19,9 +19,10 @@
 import time
 import tensorflow as tf
 from collections import defaultdict
-from typeguard import typechecked
 
 from tensorflow.keras.callbacks import Callback
+from tqdm.auto import tqdm
+from typeguard import typechecked
 
 
 @tf.keras.utils.register_keras_serializable(package="Addons")
@@ -62,24 +63,8 @@ class TQDMProgressBar(Callback):
         show_epoch_progress: bool = True,
         show_overall_progress: bool = True,
         smoothing: float = 0.1,
+        ascii: bool = False,
     ):
-
-        try:
-            # import tqdm here because tqdm is not a required package
-            # for addons
-            import tqdm
-
-            version_message = "Please update your TQDM version to >= 4.36.1, "
-            "you have version {}. To update, run !pip install -U tqdm"
-            assert tqdm.__version__ >= "4.36.1", version_message.format(
-                tqdm.__version__
-            )
-            from tqdm.rich import tqdm
-
-            self.tqdm = tqdm
-        except ImportError:
-            raise ImportError("Please install tqdm via pip install tqdm")
-
         self.metrics_separator = metrics_separator
         self.overall_bar_format = overall_bar_format
         self.epoch_bar_format = epoch_bar_format
@@ -89,6 +74,7 @@ class TQDMProgressBar(Callback):
         self.show_overall_progress = show_overall_progress
         self.metrics_format = metrics_format
         self.smoothing = smoothing
+        self.ascii = ascii
 
         # compute update interval (inverse of update per second)
         self.update_interval = 1 / update_per_second
@@ -111,7 +97,7 @@ class TQDMProgressBar(Callback):
         self.total_steps = self.params["steps"]
         if hook == "train_overall":
             if self.show_overall_progress:
-                self.overall_progress_tqdm = self.tqdm(
+                self.overall_progress_tqdm = tqdm(
                     desc="Training",
                     total=self.num_epochs,
                     bar_format=self.overall_bar_format,
@@ -119,10 +105,11 @@ class TQDMProgressBar(Callback):
                     dynamic_ncols=True,
                     unit="epochs",
                     smoothing=self.smoothing,
+                    ascii=self.ascii,
                 )
         elif hook == "test":
             if self.show_epoch_progress:
-                self.epoch_progress_tqdm = self.tqdm(
+                self.epoch_progress_tqdm = tqdm(
                     total=self.total_steps,
                     desc="Evaluating",
                     bar_format=self.epoch_bar_format,
@@ -130,6 +117,7 @@ class TQDMProgressBar(Callback):
                     dynamic_ncols=True,
                     unit=self.mode,
                     smoothing=self.smoothing,
+                    ascii=self.ascii,
                 )
         elif hook == "train_epoch":
             current_epoch_description = "Epoch {epoch}/{num_epochs}".format(
@@ -137,13 +125,14 @@ class TQDMProgressBar(Callback):
             )
             if self.show_epoch_progress:
                 print(current_epoch_description)
-                self.epoch_progress_tqdm = self.tqdm(
+                self.epoch_progress_tqdm = tqdm(
                     total=self.total_steps,
                     bar_format=self.epoch_bar_format,
                     leave=self.leave_epoch_progress,
                     dynamic_ncols=True,
                     unit=self.mode,
                     smoothing=self.smoothing,
+                    ascii=self.ascii,
                 )
 
     def _clean_up_progbar(self, hook, logs):

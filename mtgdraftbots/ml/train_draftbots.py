@@ -11,7 +11,6 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
 import zstandard as zstd
 from tensorboard.plugins.hparams import api as hp
 
@@ -215,7 +214,7 @@ if __name__ == "__main__":
     if not args.debug:
         mcp_callback = tf.keras.callbacks.ModelCheckpoint(
             filepath=output_dir + 'model',
-            monitor='accuracy',
+            monitor='val_accuracy_top_1',
             verbose=False,
             save_best_only=True,
             save_weights_only=True,
@@ -223,22 +222,23 @@ if __name__ == "__main__":
             save_freq='epoch')
         cp_callback = tf.keras.callbacks.ModelCheckpoint(
             filepath=log_dir + '/model-{epoch:04d}.ckpt',
-            monitor='loss',
+            monitor='val_accuracy_top_1',
             verbose=False,
             save_best_only=False,
             save_weights_only=True,
-            mode='min',
+            mode='max',
             save_freq='epoch')
         callbacks.append(mcp_callback)
         callbacks.append(cp_callback)
     nan_callback = tf.keras.callbacks.TerminateOnNaN()
-    es_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=8, min_delta=2**-8,
-                                                   mode='min', restore_best_weights=True, verbose=True)
+    es_callback = tf.keras.callbacks.EarlyStopping(monitor='val_accuracy_top_1', patience=8, min_delta=2**-8,
+                                                   mode='max', restore_best_weights=True, verbose=True)
     tb_callback = TensorBoardFix(log_dir=log_dir, histogram_freq=1, write_graph=True,
                                  update_freq=tensorboard_period, embeddings_freq=None,
                                  profile_batch=0 if args.debug or not args.profile else (num_batches // 2 - 16, num_batches // 2 + 15))
     hp_callback = hp.KerasCallback(log_dir, hparams)
-    tqdm_callback = TQDMProgressBar(smoothing=0.01)
+    BAR_FORMAT = "{n_fmt}/{total_fmt}{bar} {elapsed}/{remaining}s - {rate_fmt} - {desc}"
+    tqdm_callback = TQDMProgressBar(smoothing=0.01, epoch_bar_format=BAR_FORMAT, ascii=True)
     callbacks.append(nan_callback)
     # callbacks.append(es_callback)
     callbacks.append(tb_callback)

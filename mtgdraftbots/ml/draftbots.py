@@ -358,24 +358,16 @@ class DraftBot(tf.keras.models.Model):
             chosen_idx= tf.reshape(inputs[5], (-1,), name='chosen_idx')
             y_idx = tf.cast(inputs[6], dtype=loss_dtype, name='float_y_idx')
             mask = tf.cast(inputs[0] > 0, dtype=loss_dtype, name='mask')
+            scores = tf.math.multiply(scores, mask, name='masked_scores')
             probs_with_zeros = tf.nn.softmax(scores, axis=-1, name='probs_with_zeros')
             probs = tf.linalg.normalize(tf.math.multiply(probs_with_zeros, mask, name='masked_probs'),
                                         ord=1, axis=-1, name='probs')[0]
-            prob_chosen = tf.gather(probs, chosen_idx, batch_dims=1, name='prob_chosen')
+            prob_chosen = tf.gather(probs, chosen_idx, batch_dims=1, axis=1, name='prob_chosen')
             one = tf.constant(1, dtype=loss_dtype)
-            inv_prob_chosen = tf.math.subtract(one, prob_chosen,
-                                               name='inv_prob_chosen')
-            inv_y_idx = tf.math.subtract(one, y_idx, name='inv_y_idx')
-            log_losses = tf.math.add(tf.multiply(y_idx, tf.math.negative(tf.math.log(prob_chosen + 1e-04,
-                                                                                     name='log_prob'),
-                                                                         name='negative_log_prob'),
-                                                 name='log_loss_picked'),
-                                     tf.multiply(inv_y_idx, tf.math.negative(tf.math.log(inv_prob_chosen + 1e-04,
-                                                                                     name='log_inv_prob'),
-                                                                         name='negative_log_inv_prob'),
-                                                 name='log_loss_trashed'),
-                                     name='log_loss')
-            self.add_loss(tf.reduce_mean(log_losses, name='log_loss'))
+            prob_not_chosen = tf.math.subtract(one, prob_chosen, name='prob_not_chosen')
+            both_probs = tf.stack([prob_chosen, prob_not_chosen], axis=1, name='both_probs')
+            both_log_losses = tf.negative(tf.math.log(both_probs + 1e-04, name='both_logs'), name='neg_both_logs')
+            log_losses = tf.gather(both_log_losses, tf.cast(y_idx, dtype=tf.int32), axis=1, batch_dims=1)
             self.add_metric(log_losses, 'pick_log_loss')
             if tf.summary.experimental.get_step() % self.summary_period == 0:
                 tf.summary.histogram('outputs/probs', probs)
@@ -394,5 +386,4 @@ class DraftBot(tf.keras.models.Model):
             self.add_metric(top_1_accuracy, 'accuracy_top_1')
             self.add_metric(top_2_accuracy, 'accuracy_top_2')
             self.add_metric(top_3_accuracy, 'accuracy_top_3')
-            scores = tf.math.multiply(scores, mask, name='masked_scores')
         return scores

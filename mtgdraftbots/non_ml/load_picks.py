@@ -30,9 +30,9 @@ default_basic_ids = [
 ]
 default_basics = [card_to_int[c] for c in default_basic_ids]
 
-MAX_PICKED = 120
-MAX_SEEN = 480
-MAX_CARDS_IN_PACK = 24
+MAX_PICKED = 84
+MAX_SEEN = 400
+MAX_CARDS_IN_PACK = 15
 
 
 def pad(arr, desired_length):
@@ -126,7 +126,9 @@ def write_pick(pick, output_file):
 def read_pick(input_file, offset):
     coords = [[0 for _ in range(2)] for _ in range(4)]
     coord_weights = [0 for _ in range(4)]
-    parsed = PREFIX.unpack_from(prefix_bytes, offset)
+    input_file.seek(offset)
+    prefix_bytes = input_file.read(PREFIX.size)
+    parsed = PREFIX.unpack(prefix_bytes)
     offset = 0
     cards_in_pack = parsed[:MAX_CARDS_IN_PACK]
     parsed = parsed[MAX_CARDS_IN_PACK:]
@@ -134,14 +136,9 @@ def read_pick(input_file, offset):
     parsed = parsed[MAX_PICKED:]
     seen = parsed[:MAX_SEEN]
     parsed = parsed[MAX_SEEN:]
-
-    num_cards_in_pack, num_picked, num_seen, , picked_idx, trashed = PREFIX.unpack(prefix_bytes)
-    card_indices_format = f'{num_cards_in_pack}H{num_picked}H{num_seen}H'
-    card_indices_bytes = input_file.read(struct.calcsize(card_indices_format))
-    card_indices = struct.unpack(card_indices_format, card_indices_bytes)
-    cards_in_pack = card_indices[:num_cards_in_pack]
-    picked = card_indices[num_cards_in_pack:num_cards_in_pack + num_picked]
-    seen = card_indices[num_cards_in_pack + num_picked:num_cards_in_pack + num_picked + num_seen]
+    coords[0][0], coords[0][1], coords[1][0], coords[1][1], coords[2][0], coords[2][1], coords[3][0], \
+        coords[3][1], coord_weights[0], coord_weights[1], coord_weights[2], coord_weights[3], picked_idx, \
+        trashed = parsed
     return cards_in_pack, picked, seen, coords, coord_weights, picked_idx, trashed
 
 
@@ -157,10 +154,9 @@ def picks_to_pairs(picks, input_file, dest_folder):
     y_idx = np.memmap(dest_folder/'y_idx.npy', dtype=np.int32, mode='w+', shape=(context_count,))
     cards_in_pack = np.memmap(dest_folder/'cards_in_pack.npy', dtype=np.int32, mode='w+', shape=(context_count, MAX_CARDS_IN_PACK))
     pair_idx = 0
-    input_buffer = io.BufferedRandom(input_file)
     for context_idx, offset in enumerate(tqdm(picks, leave=False, dynamic_ncols=True, unit='picks',
                                               unit_scale=1, smoothing=0.001)):
-        pick = read_pick(input_buffer, offset)
+        pick = read_pick(input_file, offset)
         selected = pick[5]
         if selected is not None and 0 <= selected < len(pick[0]):
             cards_in_pack[context_idx] = np.int32(pad(pick[0], MAX_CARDS_IN_PACK))
@@ -185,7 +181,7 @@ def picks_to_pairs(picks, input_file, dest_folder):
                       ('y_idx', y_idx), ('cards_in_pack', cards_in_pack)):
         with open(dest_folder / f'{name}.npy.zstd', 'wb') as fh:
             with cctx.stream_writer(fh) as compressor:
-                np.save(compressor, arr)
+                np.save(compressor, arr, allow_pickle=False)
         print(f'Saved {name} with zstd.')
     return pair_idx
 
@@ -203,7 +199,7 @@ if __name__ == '__main__':
         else:
             with open('data/parsed_pick_offsets.json') as off1:
                 offsets = [int(l.strip()) for l in off1.readlines()]
-    with open(picks_cache_filename, 'rb') as input_file:
+    with open(picks_cache_filename, 'rb+') as input_file:
         print(f'Total picks: {len(offsets):n}')
         random.shuffle(offsets)
         split_point = len(offsets) * 4 // 5
