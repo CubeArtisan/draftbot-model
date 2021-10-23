@@ -25,7 +25,6 @@ from tqdm.auto import tqdm
 from typeguard import typechecked
 
 
-@tf.keras.utils.register_keras_serializable(package="Addons")
 class TQDMProgressBar(Callback):
     """TQDM Progress Bar for Tensorflow Keras.
     Args:

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import tensorflow as tf
+import tensorflow_addons as tfa
 import zstandard as zstd
 from tensorboard.plugins.hparams import api as hp
 
@@ -24,8 +25,10 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     BATCH_CHOICES = tuple(2 ** i for i in range(4, 18))
-    EMBED_DIMS_CHOICES = tuple(2 ** i for i in range(1, 10))
+    EMBED_DIMS_CHOICES = tuple(2 ** i + j for i in range(1, 10) for j in range(2))
     ACTIVATION_CHOICES = ('relu', 'selu', 'swish', 'tanh', 'sigmoid', 'linear', 'gelu', 'elu')
+    OPTIMIZER_CHOICES = ('adam', 'adamax', 'lazyadam', 'rectadam', 'novograd', 'lamb', 'adadelta',
+                         'nadam', 'rmsprop')
     HYPER_PARAMS = (
         {"name": "batch_size", "type": int, "choices": BATCH_CHOICES, "range": hp.Discrete(BATCH_CHOICES),
          "default": 8192, "help": "The batch size for one step."},
@@ -65,6 +68,15 @@ if __name__ == "__main__":
          "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the seen contextual rating distances.'},
         {"name": 'activation', "type": str, "default": 'elu', "choices": ACTIVATION_CHOICES,
          "range": hp.Discrete(ACTIVATION_CHOICES), "help": "The activation function for the hidden layers."},
+        {"name": 'optimizer', "type": str, "default": 'adam', "choices": OPTIMIZER_CHOICES,
+         "range": hp.Discrete(OPTIMIZER_CHOICES), "help": "The optimization algorithm to use."},
+    )
+
+    BOOL_HYPER_PARAMS = (
+        {"name": "pool_context_ratings", "action": "store_true", "help": "Whether to include the Contextual Rating layer for the current pool."},
+        {"name": "seen_context_ratings", "action": "store_true", "help": "Whether to include the Contextual Rating layer for the current set of seen cards."},
+        {"name": "item_ratings", "action": "store_true", "help": "Whether to include the individual card ratings."},
+        {"name": 'hyperbolic', "action": 'store_true', "help": 'Use the hyperbolic geometry model.'},
     )
 
     parser.add_argument('--epochs', '-e', type=int, required=True, help="The maximum number of epochs to train for")
@@ -73,7 +85,8 @@ if __name__ == "__main__":
     for param in HYPER_PARAMS:
         parser.add_argument(f'--{param["name"]}', type=param["type"], default=param["default"],
                             choices=param["choices"], help=param["help"])
-    parser.add_argument('--hyperbolic', action='store_true', help='Use the hyperbolic geometry model.')
+    for param in BOOL_HYPER_PARAMS:
+        parser.add_argument(f'--{param["name"]}', action=param['action'], help=param["help"])
     float_type_group = parser.add_mutually_exclusive_group()
     float_type_group.add_argument('-16', dest='float_type', const=tf.float16, action='store_const', help='Use 16 bit numbers throughout the model.')
     float_type_group.add_argument('--auto16', '-16rw', action='store_true', help='Automatically rewrite some operations to use 16 bit numbers.')
@@ -87,11 +100,13 @@ if __name__ == "__main__":
     parser.add_argument('--mlir', action='store_true', help='Enable MLIR passes on the data (EXPERIMENTAL).')
     parser.add_argument('--profile', action='store_true', help='Enable profiling a range of batches from the first epoch.')
     parser.add_argument('--deterministic', action='store_true', help='Try to keep the run deterministic so results can be reproduced.')
-    parser.add_argument('--dir', type=str, required=True, help='The soure directory where the training and validation data are stored')
+    parser.add_argument('--dir', type=str, required=True, help='The soure directory where the training and validation data are stored.')
+    parser.add_argument('--epochs_per_cycle', type=int, default=1, help='The number of epochs it takes to go through all the training data.')
     parser.set_defaults(float_type=tf.float32, use_xla=True)
     args = parser.parse_args()
     hparams = {hp.HParam(param["name"], param["range"]): getattr(args, param["name"]) for param in HYPER_PARAMS}
-    hparams[hp.HParam('hyperbolic', hp.Discrete((True, False)))] =  args.hyperbolic
+    hparams.update({hp.HParam(param['name'], hp.Discrete((True, False))): getattr(args, param['name'])
+                    for param in BOOL_HYPER_PARAMS})
     tf.keras.utils.set_random_seed(args.seed)
     directory = Path(args.dir)
 
@@ -103,7 +118,7 @@ if __name__ == "__main__":
         card_names = [''] + [c['name'] for c in cards_json]
 
     logging.info('Creating the pick Datasets.')
-    train_epochs_per_cycle = 1
+    train_epochs_per_cycle = args.epochs_per_cycle
     pick_generator_train = PickPairGenerator(args.batch_size, Path(directory/'training_parsed_picks'),
                                              train_epochs_per_cycle, args.seed)
     logging.info(f"There are {len(pick_generator_train):,} training batches.")
@@ -185,19 +200,32 @@ if __name__ == "__main__":
     num_batches = len(pick_generator_train)
     tensorboard_period = num_batches // 20
     draftbots_kwargs = {param["name"]: getattr(args, param["name"]) for param in HYPER_PARAMS}
+    draftbots_bool_kwargs = {param["name"]: getattr(args, param["name"]) for param in BOOL_HYPER_PARAMS}
     del draftbots_kwargs["batch_size"]
     del draftbots_kwargs["learning_rate"]
-    draftbots_kwargs["hyperbolic"] = args.hyperbolic
+    del draftbots_kwargs["optimizer"]
     draftbots = DraftBot(num_items=len(cards_json) + 1, summary_period=tensorboard_period * 4,
-                         name='DraftBot', **draftbots_kwargs)
+                         name='DraftBot', **draftbots_kwargs, **draftbots_bool_kwargs)
     latest = tf.train.latest_checkpoint(output_dir)
-    learning_rate = args.learning_rate or 0.001
-    opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    # opt = tf.keras.optimizers.Adamax(learning_rate=learning_rate)
-    # opt = tfa.optimizers.LazyAdam(learning_rate=learning_rate)
-    # opt = tfa.optimizers.RectifiedAdam(learning_rate=learning_rate)
-    # opt = tfa.optimizers.NovoGrad(learning_rate=learning_rate)
-    # opt = tfa.optimizers.LAMB(learning_rate=learning_rate)
+    learning_rate = args.learning_rate or 1e-03
+    if args.optimizer == 'adam':
+        opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    if args.optimizer == 'adadelta':
+        opt = tf.keras.optimizers.Adadelta(learning_rate=learning_rate)
+    if args.optimizer == 'nadam':
+        opt = tf.keras.optimizers.Nadam(learning_rate=learning_rate)
+    if args.optimizer == 'adamax':
+        opt = tf.keras.optimizers.Adamax(learning_rate=learning_rate)
+    if args.optimizer == 'rmsprop':
+        opt = tf.keras.optimizers.RMSprop(learning_rate=learning_rate, momentum=0.1)
+    if args.optimizer == 'lazyadam':
+        opt = tfa.optimizers.LazyAdam(learning_rate=learning_rate)
+    if args.optimizer == 'rectadam':
+        opt = tfa.optimizers.RectifiedAdam(learning_rate=learning_rate)
+    if args.optimizer == 'novograd':
+        opt = tfa.optimizers.NovoGrad(learning_rate=learning_rate)
+    if args.optimizer == 'lamb':
+        opt = tfa.optimizers.LAMB(learning_rate=learning_rate)
     # opt = tfa.optimizers.Lookahead(opt, sync_period=16, slow_step_size=0.5)
     if args.float_type == tf.float16:
         opt = tf.keras.mixed_precision.LossScaleOptimizer(opt, dynamic_growth_steps=num_batches // 128)
@@ -237,8 +265,8 @@ if __name__ == "__main__":
                                  update_freq=tensorboard_period, embeddings_freq=None,
                                  profile_batch=0 if args.debug or not args.profile else (num_batches // 2 - 16, num_batches // 2 + 15))
     hp_callback = hp.KerasCallback(log_dir, hparams)
-    BAR_FORMAT = "{n_fmt}/{total_fmt}{bar} {elapsed}/{remaining}s - {rate_fmt} - {desc}"
-    tqdm_callback = TQDMProgressBar(smoothing=0.01, epoch_bar_format=BAR_FORMAT, ascii=True)
+    BAR_FORMAT = "{n_fmt}/{total_fmt}|{bar}|{elapsed}/{remaining}s - {rate_fmt} - {desc}"
+    tqdm_callback = TQDMProgressBar(smoothing=0.01, epoch_bar_format=BAR_FORMAT)
     callbacks.append(nan_callback)
     # callbacks.append(es_callback)
     callbacks.append(tb_callback)
@@ -251,7 +279,7 @@ if __name__ == "__main__":
         epochs=args.epochs,
         callbacks=callbacks,
         verbose=0,
-        max_queue_size=2**8,
+        max_queue_size=2**10,
     )
     if not args.debug:
         logging.info('Saving final model.')

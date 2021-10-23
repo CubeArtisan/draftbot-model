@@ -247,6 +247,7 @@ class DraftBot(tf.keras.models.Model):
                  picked_synergy_uniformity_weight=0.1, seen_synergy_uniformity_weight=0.1,
                  log_loss_weight=1.0, picked_variance_weight=0.0, picked_distance_l2_weight=0.0,
                  seen_variance_weight=0.0, seen_distance_l2_weight=0.0, activation='selu',
+                 pool_context_ratings=True, seen_context_ratings=True, item_ratings=True,
                  summary_period=1024, **kwargs):
         kwargs.update({'dynamic': False})
         super(DraftBot, self).__init__(**kwargs)
@@ -269,7 +270,12 @@ class DraftBot(tf.keras.models.Model):
         self.seen_variance_weight = seen_variance_weight
         self.seen_distance_l2_weight = seen_distance_l2_weight
         self.activation = activation
+        self.pool_context_ratings = pool_context_ratings
+        self.seen_context_ratings = seen_context_ratings
+        self.item_ratings = item_ratings
         self.summary_period = summary_period
+        if not pool_context_ratings and not seen_context_ratings and not item_ratings:
+            raise ValueError('Must have at least one sublayer enabled')
 
     def get_config(self):
         config = super(DraftBot, self).get_config()
@@ -298,31 +304,45 @@ class DraftBot(tf.keras.models.Model):
         return config
 
     def build(self, input_shapes):
-        picked_contextual_rating = ContextualRating(self.num_items, self.embed_dims, self.picked_dims,
-                                                    hyperbolic=self.hyperbolic, item_dropout_rate=self.dropout_picked,
-                                                    dense_dropout_rate=self.dropout_dense,
-                                                    uniformity_weight=self.picked_synergy_uniformity_weight,
-                                                    variance_weight=self.picked_variance_weight,
-                                                    distance_l2_weight=self.picked_distance_l2_weight,
-                                                    activation=self.activation,
-                                                    summary_period=self.summary_period, name='RatingFromPicked')
-        seen_contextual_rating = ContextualRating(self.num_items, self.embed_dims, self.seen_dims,
-                                                  hyperbolic=self.hyperbolic, item_dropout_rate=self.dropout_seen,
-                                                  dense_dropout_rate=self.dropout_dense,
-                                                  uniformity_weight=self.seen_synergy_uniformity_weight,
-                                                  variance_weight=self.seen_variance_weight,
-                                                  distance_l2_weight=self.seen_distance_l2_weight,
-                                                  activation=self.activation,
-                                                  summary_period=self.summary_period, name='RatingFromSeen')
-        card_rating = ItemRating(self.num_items, uniformity_weight=self.rating_uniformity_weight,
-                                 summary_period=self.summary_period, name='Rating')
-        self.time_varying = TimeVaryingLinear((card_rating, picked_contextual_rating, seen_contextual_rating),
-                                              ((0,), (0, 1), (0, 2)), (3, 15), summary_period=self.summary_period,
-                                              name='OracleCombination')
+        sublayers = []
+        sublayer_args = []
+        if self.pool_context_ratings:
+            sublayers.append(ContextualRating(self.num_items, self.embed_dims, self.picked_dims,
+                                              hyperbolic=self.hyperbolic, item_dropout_rate=self.dropout_picked,
+                                              dense_dropout_rate=self.dropout_dense,
+                                              uniformity_weight=self.picked_synergy_uniformity_weight,
+                                              variance_weight=self.picked_variance_weight,
+                                              distance_l2_weight=self.picked_distance_l2_weight,
+                                              activation=self.activation,
+                                              summary_period=self.summary_period, name='RatingFromPicked'))
+            sublayer_args.append((0, 1))
+        if self.seen_context_ratings:
+            sublayers.append(ContextualRating(self.num_items, self.embed_dims, self.seen_dims,
+                                              hyperbolic=self.hyperbolic, item_dropout_rate=self.dropout_seen,
+                                              dense_dropout_rate=self.dropout_dense,
+                                              uniformity_weight=self.seen_synergy_uniformity_weight,
+                                              variance_weight=self.seen_variance_weight,
+                                              distance_l2_weight=self.seen_distance_l2_weight,
+                                              activation=self.activation,
+                                              summary_period=self.summary_period, name='RatingFromSeen'))
+            sublayer_args.append((0, 2))
+        if self.item_ratings:
+            sublayers.append(ItemRating(self.num_items, uniformity_weight=self.rating_uniformity_weight,
+                                        summary_period=self.summary_period, name='Rating'))
+            sublayer_args.append((0,))
+        self.time_varying = TimeVaryingLinear(sublayers, sublayer_args, (3, 15),
+                                              summary_period=self.summary_period, name='OracleCombination')
 
     def call(self, inputs, training=False):
+        cast_inputs = (
+            tf.cast(inputs[0], dtype=tf.int32, name='card_choices'),
+            tf.cast(inputs[1], dtype=tf.int32, name='picked'),
+            tf.cast(inputs[2], dtype=tf.int32, name='seen'),
+            tf.cast(inputs[3], dtype=tf.int32, name='coords'),
+            tf.cast(inputs[4], dtype=tf.float32, name='coord_weights'),
+        )
         loss_dtype = tf.float32
-        scores = tf.cast(self.time_varying(inputs[:5], training=training), dtype=loss_dtype, name='scores')
+        scores = tf.cast(self.time_varying(cast_inputs, training=training), dtype=loss_dtype, name='scores')
         if len(inputs) == 6:
             y_idx = inputs[5]
             if self.log_loss_weight > 0:

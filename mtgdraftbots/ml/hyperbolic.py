@@ -6,24 +6,25 @@ from mtgdraftbots.ml.utils import dropout
 # @tf.function
 def clipped_sinh(x, clipped_mag=8, name=None):
     with tf.name_scope(name or 'ClippedSinh') as scope:
-        clip_op = tf.grad_pass_through(lambda y: tf.clip_by_value(y, tf.constant(-clipped_mag, dtype=y.dtype),
-                                                                  tf.constant(clipped_mag, dtype=y.dtype),
-                                                                  name='clipped_x'))
+        clip_op = lambda y: tf.clip_by_value(y, tf.constant(-clipped_mag, dtype=y.dtype),
+                                             tf.constant(clipped_mag, dtype=y.dtype), name='clipped_x')
+        # clip_op = tf.grad_pass_through(clip_op)
         return tf.math.sinh(clip_op(x), name=scope)
 
 
 # @tf.function
 def clipped_cosh(x, clipped_mag=8, name=None):
     with tf.name_scope(name or 'ClippedCosh') as scope:
-        clip_op = tf.grad_pass_through(lambda y: tf.clip_by_value(y, tf.constant(-clipped_mag, dtype=y.dtype),
-                                                                  tf.constant(clipped_mag, dtype=y.dtype),
-                                                                  name='clipped_x'))
+        clip_op = lambda y: tf.clip_by_value(y, tf.constant(-clipped_mag, dtype=y.dtype),
+                                             tf.constant(clipped_mag, dtype=y.dtype), name='clipped_x')
+        # clip_op = tf.grad_pass_through(clip_op)
         return tf.math.cosh(clip_op(x), name=scope)
 
 
 def safe_acosh(x, name=None):
     with tf.name_scope(name or 'SafeACosh') as scope:
-        clip_op = tf.grad_pass_through(lambda y: tf.maximum(y, tf.constant(1.0001, dtype=y.dtype), name='clipped_x'))
+        clip_op = lambda y: tf.maximum(y, tf.constant(1.0001, dtype=y.dtype), name='clipped_x')
+        # clip_op = tf.grad_pass_through(clip_op)
         return tf.math.acosh(clip_op(x), name=scope)
 
 
@@ -64,10 +65,8 @@ def to_hyper(x, curvature, name='ToHyperbolic'):
         scaled_norm_x = tf.add(tf.math.divide(tf.norm(x, axis=-1, keepdims=True, name='norm_x'), sqrt_curvature, name='scaled_norm_x'),
                                tf.constant(1e-04, dtype=x.dtype), name='shifted_norm_x')
         first = tf.math.multiply(sqrt_curvature, clipped_cosh(scaled_norm_x, name='cosh_norm_x'), name='first_coord')
-        rest_multiplier = tf.where(scaled_norm_x > 0,
-                                   tf.math.divide_no_nan(clipped_sinh(scaled_norm_x, name='sinh_norm_x'),
-                                                         scaled_norm_x, name='x_multiplier_non_degenerate'),
-                                   tf.ones_like(scaled_norm_x), name='rest_multiplier')
+        rest_multiplier = tf.math.divide(clipped_sinh(scaled_norm_x, name='sinh_norm_x'),
+                                         scaled_norm_x, name='rest_multiplier')
         rest = tf.math.multiply(rest_multiplier, x, 'scaled_x')
         return tf.concat([first, rest], axis=-1, name=scope)
 
@@ -81,11 +80,9 @@ def logmap(vec, origin, curvature, name='HyperbolicLogMap'):
                                     safe_acosh(tf.math.negative(inner_scaled, name='negative_inner_scaled'), name='acosh_inner'),
                                     name='distance')
         unnormalized = tf.math.add(vec, tf.math.multiply(origin, inner_scaled, name='scaled_origin'), name='unnormalized')
-        multiplier = tf.math.divide_no_nan(distance, norm_hyper(unnormalized, keepdims=True, name='norm_unnormalized'),
-                                           name='multiplier')
-        result = tf.math.multiply(multiplier, unnormalized, name='result')
-        return tf.where(tf.math.reduce_all(vec == origin, axis=-1, keepdims=True, name='match_origin'),
-                        tf.zeros_like(result), result, name=scope)
+        multiplier = tf.math.divide(distance, norm_hyper(unnormalized, keepdims=True, name='norm_unnormalized'),
+                                    name='multiplier')
+        return tf.math.multiply(multiplier, unnormalized, name='scope')
 
 
 # @tf.function
@@ -96,10 +93,8 @@ def expmap(vec, origin, curvature, name='HyperbolicExpMap'):
                                  tf.constant(1e-04, dtype=vec.dtype), name='shifted_norm_vec')
         origin_coeff = clipped_cosh(scaled_norm_vec, name='origin_coeff')
         scaled_origin = tf.math.multiply(origin_coeff, origin, name='scaled_origin')
-        vec_coeff = tf.where(scaled_norm_vec > 0,
-                             tf.math.divide_no_nan(clipped_sinh(scaled_norm_vec, name='sinh_norm_vec'),
-                                                   scaled_norm_vec, name='vec_coeff'),
-                             tf.ones_like(scaled_norm_vec), name='vec_multiplier')
+        vec_coeff = tf.math.divide(clipped_sinh(scaled_norm_vec, name='sinh_norm_vec'),
+                                   scaled_norm_vec, name='vec_coeff')
         scaled_vec = tf.math.multiply(vec_coeff, vec, name='scaled_vec')
         return tf.math.add(scaled_origin, scaled_vec, name=scope)
 
@@ -195,9 +190,6 @@ class DenseHyperbolic(tf.keras.layers.Layer):
             biased = expmap(bias_tangent, origin=hyper_weighted_vecs, curvature=in_curvature, name='biased')
             # now we can lower it into the tangent space of out_origin.
             biased_tangent = logmap(biased, origin=out_origin, curvature=in_curvature, name='biased_tangent')
-            # removing_nans = tf.where(tf.math.reduce_all(hyper_weighted_vecs == out_origin, axis=-1, keepdims=True,
-            #                                             name='hyper_weighted_vecs_match_origin'),
-            #                          tf.expand_dims(bias, 0), biased_tangent, name='biased_tangent_no_nan')
             weighted_vecs = tf.math.multiply(biased_tangent, mask_out, 'masked_biased_tangent')
         return expmap(self.activation_layer(weighted_vecs), origin=out_origin2, curvature=out_curvature,
                       name=self.name)

@@ -50,11 +50,10 @@ class PickPairGenerator(tf.keras.utils.Sequence):
     def __getitem__(self, idx):
         idx += (self.epoch_count % self.epochs_per_completion) * len(self)
         indices = self.shuffled_indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        pairs = self.pairs[indices]
         context_idxs = self.context_idxs[indices]
-        result = (np.int32(self.pairs[indices]), np.int32(self.picked[context_idxs]), np.int32(self.seen[context_idxs]),
+        result = (self.pairs[indices], self.picked[context_idxs], self.seen[context_idxs],
                   self.coords[context_idxs], self.coord_weights[context_idxs], self.y_idx[context_idxs])
-        return (result,self.y_idx[context_idxs])
+        return (result, self.y_idx[context_idxs])
 
 
 class PickGenerator(tf.keras.utils.Sequence):
@@ -88,7 +87,7 @@ class PickGenerator(tf.keras.utils.Sequence):
     def __getitem__(self, idx):
         idx += (self.epoch_count % self.epochs_per_completion) * len(self)
         context_idxs = self.shuffled_indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        result = (np.int32(self.cards_in_pack[context_idxs]), np.int32(self.picked[context_idxs]),
-                  np.int32(self.seen[context_idxs]), self.coords[context_idxs],
+        result = (self.cards_in_pack[context_idxs], self.picked[context_idxs],
+                  self.seen[context_idxs], self.coords[context_idxs],
                   self.coord_weights[context_idxs], self.chosen_idx[context_idxs], self.y_idx[context_idxs])
         return (result, self.y_idx[context_idxs])
