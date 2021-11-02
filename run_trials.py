@@ -1,54 +1,80 @@
+import itertools
+import random
 import subprocess
+import sys
 
-fixed_args = [
-    "--dir", "data/m19_drafts",
+FIXED = [
+    "--dir", sys.argv[1],
     "--deterministic",
     "--xla",
     "-32",
-    "--epochs", '1',
+    "--epochs", '16',
+    "--epochs_per_cycle", "4",
     "--seed", '127',
-    "--batch_size", '4096',
-    "--learning_rate", '1e-03',
-    "--dropout_picked", "0.25",
-    "--dropout_seen", "0.25",
-    "--dropout_dense", "0.0",
-    "--contrastive_loss_weight", "1.0",
-    "--rating_uniformity_weight", "0.0",
-    "--picked_synergy_uniformity_weight", "0.0",
-    "--seen_synergy_uniformity_weight", "0.0",
-    "--picked_variance_weight", "0.0",
-    "--seen_variance_weight", "0.0",
-    "--picked_distance_l2_weight", "0.0",
-    "--seen_distance_l2_weight", "0.0",
-    "--optimizer", "adamax",
-    "--epochs_per_cycle", "1",
+    "--pool_context_ratings",
 ]
 
-def launch_command(args, counter):
-    command = ['python', '-m' 'mtgdraftbots.ml.train_draftbots', '--name', f'run-{counter:03d}'] + args
-    print(command)
-    print(subprocess.run(' '.join(command), shell=True))
 
-counter = 0
-for hyperbolic in (True, False):
-    args_0 = fixed_args + (['--hyperbolic'] if hyperbolic else [])
-    for log_loss_weight in (0.0,):
-        args_1 = args_0 + ['--log_loss_weight', str(log_loss_weight)]
-        for margin in (1,):
-            args_2 = args_1 + ['--margin', str(margin)]
-            # for activation in ('relu', 'elu', 'tanh', 'linear'):
-            for activation in ('elu',):
-                args_3 = args_2 + ['--activation', activation]
-                for use_pool in (True, False):
-                    args_4 = args_3 + (['--pool_context_ratings'] if use_pool else [])
-                    for use_seen in (True, False):
-                        args_5 = args_4 + (['--seen_context_ratings'] if use_seen else [])
-                        for use_ratings in (True, False):
-                            if not use_ratings and not use_pool and not use_seen:
-                                continue
-                            args_6 = args_5 + (['--item_ratings'] if use_ratings else [])
-                            for dims in (2, 64):
-                                dims = dims + (1 if hyperbolic else 0)
-                                args_7 = args_6 + ['--embed_dims', str(dims), '--seen_dims', str(dims), '--picked_dims', str(dims)]
-                                launch_command(args_7, counter)
-                                counter += 1
+def value_arg(name, choices):
+    for choice in choices:
+        yield (f'--{name}', str(choice))
+
+
+def bool_arg(name):
+    return ((f'--{name}',), ())
+
+
+def launch_command(args, counter):
+    command = ' '.join(itertools.chain(('python', '-m', 'mtgdraftbots.ml.train_draftbots', '--name', f'run-{counter:03d}'), args))
+    print('Running', command)
+    print('Result', subprocess.run(command, shell=True))
+
+
+VALUE_HYPER_PARAMS = {
+    'batch_size': (128, 1024, 8192),
+    'learning_rate': ('1e-04', '1e-03', '1e-02'),
+    'embed_dims': (2, 64),
+    'seen_dims': (2, 64),
+    'picked_dims': (2, 64),
+    'dropout_picked': (0.0, 0.5),
+    'dropout_seen': (0.0, 0.5),
+    'dropout_dense': (0.0, 0.5),
+    'contrastive_loss_weight': (1.0,),
+    'log_loss_weight': (0.0,),
+    'rating_uniformity_weight': (0,),
+    'picked_synergy_uniformity_weight': (0,),
+    'seen_synergy_uniformity_weight': (0,),
+    'margin': (0, 1),
+    'picked_variance_weight': (0.0,),
+    'seen_variance_weight': (0.0,),
+    'picked_distance_l2_weight': (0.0,),
+    'seen_distance_l2_weight': (0.0,),
+    # 'picked_variance_weight': (0.0, '1e-01'),
+    # 'seen_variance_weight': (0.0, '1e-01'),
+    # 'picked_distance_l2_weight': (0.0, '1e-04'),
+    # 'seen_distance_l2_weight': (0.0, '1e-04'),
+    'activation': ('selu', 'tanh', 'linear'),
+    'final_activation': ('tanh', 'linear'),
+    'optimizer': ('adam', 'adamax'),
+}
+BOOL_HYPER_PARAMS = (
+    'seen_context_ratings',
+    'item_ratings',
+    'hyperbolic',
+    'bounded_distance',
+    'normalize_sum',
+)
+HYPER_PARAMS = [value_arg(k, v) for k, v in VALUE_HYPER_PARAMS.items()] + [bool_arg(k) for k in BOOL_HYPER_PARAMS]
+
+def run_trials():
+    counter = 0
+    args_arr = [arg_tuples for arg_tuples in itertools.product(*HYPER_PARAMS)]
+    print(f'There are {len(args_arr):,} configurations')
+    random.shuffle(args_arr)
+    for args in args_arr:
+        launch_command(itertools.chain(FIXED, *args), counter)
+        counter += 1
+
+
+if __name__ == '__main__':
+    run_trials()

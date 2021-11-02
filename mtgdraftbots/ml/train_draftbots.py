@@ -20,64 +20,69 @@ from mtgdraftbots.ml.generators import PickGenerator, PickPairGenerator
 from mtgdraftbots.ml.tqdm_callback import TQDMProgressBar
 from mtgdraftbots.ml.utils import Range, TensorBoardFix
 
+BATCH_CHOICES = tuple(2 ** i for i in range(4, 18))
+EMBED_DIMS_CHOICES = tuple(2 ** i for i in range(1, 10))
+ACTIVATION_CHOICES = ('relu', 'selu', 'swish', 'tanh', 'sigmoid', 'linear', 'gelu', 'elu')
+OPTIMIZER_CHOICES = ('adam', 'adamax', 'lazyadam', 'rectadam', 'novograd', 'lamb', 'adadelta',
+                     'nadam', 'rmsprop')
+HYPER_PARAMS = (
+    {"name": "batch_size", "type": int, "choices": BATCH_CHOICES, "range": hp.Discrete(BATCH_CHOICES),
+     "default": 8192, "help": "The batch size for one step."},
+    {"name": "learning_rate", "type": float, "choices": [Range(1e-06, 1e+01)],
+     "range": hp.RealInterval(1e-06, 1e+05), "default": 1e-03, "help": "The initial learning rate to train with."},
+    {"name": "embed_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": "The number of dimensions to use for card embeddings."},
+    {"name": "seen_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for seen card embeddings.'},
+    {"name": 'picked_dims', "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for picked card embeddings.'},
+    {"name": 'dropout_picked', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the pool embedding.'},
+    {"name": 'dropout_seen', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the seen embedding.'},
+    {"name": 'dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
+    {"name": 'contrastive_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on difference of the scores.'},
+    {"name": 'log_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on the log of the probability we guess correctly for each pair.'},
+    {"name": 'rating_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make card ratings uniformly distributed.'},
+    {"name": 'picked_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make picked synergies uniformly distributed.'},
+    {"name": 'seen_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make seen synergies uniformly distributed.'},
+    {"name": 'margin', "type": float, "default": 1.0, "choices": [Range(0.0, 1e+02)],
+     "range": hp.RealInterval(0.0, 1e+02), "help": 'The minimum amount the score of the correct option should win by.'},
+    {"name": 'picked_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of picked contextual rating close to that of a uniform distribution.'},
+    {"name": 'seen_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of seen contextual rating close to that of a uniform distribution.'},
+    {"name": 'picked_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the picked contextual rating distances.'},
+    {"name": 'seen_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the seen contextual rating distances.'},
+    {"name": 'activation', "type": str, "default": 'elu', "choices": ACTIVATION_CHOICES,
+     "range": hp.Discrete(ACTIVATION_CHOICES), "help": "The activation function for the hidden layers."},
+    {"name": 'final_activation', "type": str, "default": 'elu', "choices": ACTIVATION_CHOICES,
+     "range": hp.Discrete(ACTIVATION_CHOICES), "help": "The activation function for the final embedding layer."},
+    {"name": 'optimizer', "type": str, "default": 'adam', "choices": OPTIMIZER_CHOICES,
+     "range": hp.Discrete(OPTIMIZER_CHOICES), "help": "The optimization algorithm to use."},
+)
+
+BOOL_HYPER_PARAMS = (
+    {"name": "pool_context_ratings", "action": "store_true", "help": "Whether to include the Contextual Rating layer for the current pool."},
+    {"name": "seen_context_ratings", "action": "store_true", "help": "Whether to include the Contextual Rating layer for the current set of seen cards."},
+    {"name": "item_ratings", "action": "store_true", "help": "Whether to include the individual card ratings."},
+    {"name": 'hyperbolic', "action": 'store_true', "help": 'Use the hyperbolic geometry model.'},
+    {"name": "bounded_distance", "action": "store_true", "help": "Use a bounded metric for distance"},
+    {"name": "normalize_sum", "action": "store_true", "help": "L2 Normalize the sum of card embeddings before passing them through the dense layers."},
+)
+
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, '')
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
-    BATCH_CHOICES = tuple(2 ** i for i in range(4, 18))
-    EMBED_DIMS_CHOICES = tuple(2 ** i + j for i in range(1, 10) for j in range(2))
-    ACTIVATION_CHOICES = ('relu', 'selu', 'swish', 'tanh', 'sigmoid', 'linear', 'gelu', 'elu')
-    OPTIMIZER_CHOICES = ('adam', 'adamax', 'lazyadam', 'rectadam', 'novograd', 'lamb', 'adadelta',
-                         'nadam', 'rmsprop')
-    HYPER_PARAMS = (
-        {"name": "batch_size", "type": int, "choices": BATCH_CHOICES, "range": hp.Discrete(BATCH_CHOICES),
-         "default": 8192, "help": "The batch size for one step."},
-        {"name": "learning_rate", "type": float, "choices": [Range(1e-06, 1e+01)],
-         "range": hp.RealInterval(1e-06, 1e+05), "default": 1e-03, "help": "The initial learning rate to train with."},
-        {"name": "embed_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
-         "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": "The number of dimensions to use for card embeddings."},
-        {"name": "seen_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
-         "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for seen card embeddings.'},
-        {"name": 'picked_dims', "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
-         "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for picked card embeddings.'},
-        {"name": 'dropout_picked', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the pool embedding.'},
-        {"name": 'dropout_seen', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the seen embedding.'},
-        {"name": 'dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
-        {"name": 'contrastive_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on difference of the scores.'},
-        {"name": 'log_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on the log of the probability we guess correctly for each pair.'},
-        {"name": 'rating_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make card ratings uniformly distributed.'},
-        {"name": 'picked_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make picked synergies uniformly distributed.'},
-        {"name": 'seen_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make seen synergies uniformly distributed.'},
-        {"name": 'margin', "type": float, "default": 1.0, "choices": [Range(0.0, 1e+02)],
-         "range": hp.RealInterval(0.0, 1e+02), "help": 'The minimum amount the score of the correct option should win by.'},
-        {"name": 'picked_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of picked contextual rating close to that of a uniform distribution.'},
-        {"name": 'seen_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of seen contextual rating close to that of a uniform distribution.'},
-        {"name": 'picked_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the picked contextual rating distances.'},
-        {"name": 'seen_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-         "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the seen contextual rating distances.'},
-        {"name": 'activation', "type": str, "default": 'elu', "choices": ACTIVATION_CHOICES,
-         "range": hp.Discrete(ACTIVATION_CHOICES), "help": "The activation function for the hidden layers."},
-        {"name": 'optimizer', "type": str, "default": 'adam', "choices": OPTIMIZER_CHOICES,
-         "range": hp.Discrete(OPTIMIZER_CHOICES), "help": "The optimization algorithm to use."},
-    )
-
-    BOOL_HYPER_PARAMS = (
-        {"name": "pool_context_ratings", "action": "store_true", "help": "Whether to include the Contextual Rating layer for the current pool."},
-        {"name": "seen_context_ratings", "action": "store_true", "help": "Whether to include the Contextual Rating layer for the current set of seen cards."},
-        {"name": "item_ratings", "action": "store_true", "help": "Whether to include the individual card ratings."},
-        {"name": 'hyperbolic', "action": 'store_true', "help": 'Use the hyperbolic geometry model.'},
-    )
 
     parser.add_argument('--epochs', '-e', type=int, required=True, help="The maximum number of epochs to train for")
     parser.add_argument('--name', '-o', '-n', type=str, required=True, help="The name to save this model under.")
@@ -102,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument('--deterministic', action='store_true', help='Try to keep the run deterministic so results can be reproduced.')
     parser.add_argument('--dir', type=str, required=True, help='The soure directory where the training and validation data are stored.')
     parser.add_argument('--epochs_per_cycle', type=int, default=1, help='The number of epochs it takes to go through all the training data.')
+    parser.add_argument('--epochs_per_validation', type=int, default=1, help='The number of epochs between running validation.')
     parser.set_defaults(float_type=tf.float32, use_xla=True)
     args = parser.parse_args()
     hparams = {hp.HParam(param["name"], param["range"]): getattr(args, param["name"]) for param in HYPER_PARAMS}
@@ -275,7 +281,7 @@ if __name__ == "__main__":
     draftbots.fit(
         pick_generator_train,
         validation_data=pick_generator_test,
-        validation_freq=train_epochs_per_cycle,
+        validation_freq=args.epochs_per_validation,
         epochs=args.epochs,
         callbacks=callbacks,
         verbose=0,

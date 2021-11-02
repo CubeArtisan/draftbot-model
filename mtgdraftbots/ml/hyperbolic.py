@@ -197,7 +197,7 @@ class DenseHyperbolic(tf.keras.layers.Layer):
 
 class SetHyperEmbedding(tf.keras.layers.Layer):
     def __init__(self, num_items, embed_dims, final_dims=None, item_dropout_rate=0.0, dense_dropout_rate=0.0,
-                 activation='selu', **kwargs):
+                 activation='selu', final_activation='linear', normalize_sum=True, **kwargs):
         super(SetHyperEmbedding, self).__init__(**kwargs)
         self.num_items = num_items
         self.embed_dims = embed_dims
@@ -205,6 +205,8 @@ class SetHyperEmbedding(tf.keras.layers.Layer):
         self.dense_dropout_rate = dense_dropout_rate
         self.final_dims = final_dims or embed_dims
         self.activation = activation
+        self.final_activation = final_activation
+        self.normalize_sum = normalize_sum
 
     def get_config(self):
         config = super(SetHyperEmbedding, self).get_config()
@@ -215,35 +217,39 @@ class SetHyperEmbedding(tf.keras.layers.Layer):
             "dense_dropout_rate": self.dense_dropout_rate,
             "final_dims": self.final_dims,
             "activation": self.activation,
+            "final_activation": self.final_activation,
+            "normalize_sum": self.normalize_sum,
         })
         return config
 
     def build(self, input_shape):
-        self.embeddings = self.add_weight('item_embeddings', shape=(self.num_items - 1, self.embed_dims - 1),
+        self.embeddings = self.add_weight('item_embeddings', shape=(self.num_items - 1, self.embed_dims),
                                           initializer=tf.random_normal_initializer(0, 1 / self.embed_dims / self.embed_dims),
                                           trainable=True)
         self.upcast_2x = DenseHyperbolic(2 * self.embed_dims, activation=self.activation, use_bias=True,
                                          name='upcast_2x')
         self.upcast_4x = DenseHyperbolic(4 * self.embed_dims, activation=self.activation, use_bias=True,
                                          name='upcast_4x')
-        self.downcast_final = DenseHyperbolic(self.final_dims, activation='linear', use_bias=True,
-                                              name='downcast_final')
-        self.dense_dropout2 = DropoutHyperbolic(self.dense_dropout_rate, normalization=2, name='dense_dropout2')
-        self.dense_dropout4 = DropoutHyperbolic(self.dense_dropout_rate, normalization=2, name='dense_dropout4')
-        self.initial_bias = self.add_weight('initial_bias', shape=(self.embed_dims - 1,),
+        self.downcast_final = DenseHyperbolic(self.final_dims, activation=self.final_activation,
+                                              use_bias=True, name='downcast_final')
+        self.dense_dropout2 = DropoutHyperbolic(self.dense_dropout_rate, normalization=1, name='dense_dropout2')
+        self.dense_dropout4 = DropoutHyperbolic(self.dense_dropout_rate, normalization=1, name='dense_dropout4')
+        self.initial_bias = self.add_weight('initial_bias', shape=(self.embed_dims,),
                                             initializer=tf.random_normal_initializer(0, 1 / self.embed_dims / self.embed_dims),
                                             trainable=True)
 
     def call(self, inputs, training=False):
         indices, curvature = inputs
-        embeddings = tf.concat([tf.constant(0, shape=(1, self.embed_dims - 1), dtype=self.compute_dtype),
+        embeddings = tf.concat([tf.constant(0, shape=(1, self.embed_dims), dtype=self.compute_dtype),
                                 self.embeddings], 0, name='embeddings')
         dropped_indices = dropout(indices, self.item_dropout_rate, scale=None, training=training, name='dropped_indices')
         item_embeds = tf.gather(embeddings, dropped_indices, name='item_embeds')
         summed_embeds = tf.math.reduce_sum(item_embeds, 1, name='summed_embeds')
-        normalized_embeds = tf.math.l2_normalize(tf.math.add(summed_embeds, self.initial_bias, name='biased_embeds'),
+        if self.normalize_sum:
+            summed_embeds = tf.math.l2_normalize(tf.math.add(summed_embeds, self.initial_bias,
+                                                             name='biased_embeds'),
                                                  axis=-1, epsilon=1e-04, name='normalized_embeds')
-        hyper_embeds = to_hyper(normalized_embeds, curvature, name='hyper_embeds')
+        hyper_embeds = to_hyper(summed_embeds, curvature, name='hyper_embeds')
         upcast_2x = self.dense_dropout2((self.upcast_2x((hyper_embeds, curvature, curvature)), curvature),
                                        training=training)
         upcast_4x = self.dense_dropout4((self.upcast_4x((upcast_2x, curvature, curvature)), curvature),
