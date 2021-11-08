@@ -33,6 +33,7 @@ default_basics = [card_to_int[c] for c in default_basic_ids]
 MAX_PICKED = 84
 MAX_SEEN = 400
 MAX_CARDS_IN_PACK = 15
+BASIC_MULTIPLICITY = 8
 
 
 def pad(arr, desired_length):
@@ -60,22 +61,27 @@ def interpolate(pickNum, numPicks, packNum, numPacks):
 
 def picks_from_draft(draft):
     if isinstance(draft, dict):
-        basics = [x + 1 for x in draft.get('basics', default_basics)]
+        basics = BASIC_MULTIPLICITY * [x + 1 for x in draft.get('basics', default_basics)]
         if 'picks' in draft:
             for pick in draft['picks']:
                 if all(isinstance(x, int) for x in pick['cardsInPack']) and \
                    all(isinstance(x, int) for x in pick['picked']) and \
                    all(isinstance(x, int) for x in pick['seen']):
-                    cards_in_pack = list(set(x + 1 for x in pick['cardsInPack']))
-                    if 1 < len(cards_in_pack) <= MAX_CARDS_IN_PACK:
-                        picked = [x + 1 for x in pick['picked']] + 8 * basics
-                        seen = [x + 1 for x in pick['seen']] + 8 * basics
-                        if len(picked) <= MAX_PICKED and len(seen) <= MAX_SEEN:
-                            coords, coord_weights = interpolate(pick['pickNum'], pick['numPicks'],
-                                                                pick['packNum'], pick['numPacks'])
-                            picked_idx = pick.get('pickedIdx', pick.get('trashedIdx', None))
-                            trashed = 0 if 'pickedIdx' in pick else 1
-                            yield (cards_in_pack, picked, seen, coords, coord_weights, picked_idx, trashed)
+                    picked_idx = pick.get('pickedIdx', pick.get('trashedIdx', None))
+                    cards_in_pack = [x + 1 for x in pick['cardsInPack']]
+                    if picked_idx and 0 <= picked_idx < len(cards_in_pack):
+                        chosen = cards_in_pack[picked_idx]
+                        cards_in_pack = set(cards_in_pack)
+                        cards_in_pack.remove(chosen)
+                        cards_in_pack = [chosen, *cards_in_pack]
+                        if 1 < len(cards_in_pack) <= MAX_CARDS_IN_PACK:
+                            picked = [x + 1 for x in pick['picked']] + basics
+                            seen = [x + 1 for x in pick['seen']] + basics
+                            if len(picked) <= MAX_PICKED and len(seen) <= MAX_SEEN:
+                                coords, coord_weights = interpolate(pick['pickNum'], pick['numPicks'],
+                                                                    pick['packNum'], pick['numPacks'])
+                                trashed = 0 if 'pickedIdx' in pick else 1
+                                yield (cards_in_pack, picked, seen, coords, coord_weights, 0, trashed)
 
 
 def picks_from_draft2(draft):
@@ -87,13 +93,16 @@ def picks_from_draft2(draft):
             if  cards_in_pack_ints and picked_ints and seen_ints:
                 cards_in_pack = list(set(old_int_to_new_int[x] + 1 for x in pick['cardsInPack']))
                 chosen_card = old_int_to_new_int[pick['chosenCard']] + 1
+                picked_idx = cards_in_pack.index(chosen_card)
+                cards_in_pack = set(cards_in_pack)
+                cards_in_pack.remove(chosen_card)
+                cards_in_pack = [chosen_card, *cards_in_pack]
                 if 1 < len(cards_in_pack) <= MAX_CARDS_IN_PACK and chosen_card in cards_in_pack:
                     picked = [old_int_to_new_int[x] + 1 for x in pick['picked']] + 8 * default_basics
                     seen = [old_int_to_new_int[x] + 1 for x in pick['seen']] + 8 * default_basics
                     if len(picked) <= MAX_PICKED and len(seen) <= MAX_SEEN:
                         coords, coord_weights = interpolate(pick['pick'], pick['packSize'], pick['pack'],
                                                             pick['packs'])
-                        picked_idx = cards_in_pack.index(chosen_card)
                         yield (cards_in_pack, picked, seen, coords, coord_weights, picked_idx, 0)
 
 
@@ -201,10 +210,11 @@ if __name__ == '__main__':
                 offsets = [int(l.strip()) for l in off1.readlines()]
     with open(picks_cache_filename, 'rb+') as input_file:
         print(f'Total picks: {len(offsets):n}')
-        random.shuffle(offsets)
-        split_point = len(offsets) * 4 // 5
         if len(sys.argv) > 3:
             split_point = len(offsets)
+        else:
+            split_point = len(offsets) * 4 // 5
+            random.shuffle(offsets)
         training_pick_offsets = offsets[:split_point]
         validation_pick_offsets = offsets[split_point:]
         del offsets

@@ -80,7 +80,7 @@ def logmap(vec, origin, curvature, name='HyperbolicLogMap'):
                                     safe_acosh(tf.math.negative(inner_scaled, name='negative_inner_scaled'), name='acosh_inner'),
                                     name='distance')
         unnormalized = tf.math.add(vec, tf.math.multiply(origin, inner_scaled, name='scaled_origin'), name='unnormalized')
-        multiplier = tf.math.divide(distance, norm_hyper(unnormalized, keepdims=True, name='norm_unnormalized'),
+        multiplier = tf.math.divide(distance, norm_hyper(unnormalized, keepdims=True, name='norm_unnormalized') + 1e-04,
                                     name='multiplier')
         return tf.math.multiply(multiplier, unnormalized, name='scope')
 

@@ -24,6 +24,7 @@ class PickPairGenerator(tf.keras.utils.Sequence):
             counts = json.load(count_file)
             pair_count = counts['pairs']
             context_count = counts['contexts']
+        self.seed = seed
         self.pair_count = pair_count
         self.batch_size = batch_size
         self.seen = load_npy_to_tensor(folder/'seen.npy.zstd')
@@ -38,6 +39,12 @@ class PickPairGenerator(tf.keras.utils.Sequence):
         self.epoch_count = -1
         self.epochs_per_completion = epochs_per_completion
         self.on_epoch_end()
+        self.original_indices = np.copy(self.shuffled_indices)
+
+    def reset_rng(self):
+        self.rng = np.random.Generator(np.random.PCG64(self.seed))
+        self.shuffled_indices = np.copy(self.original_indices)
+        self.epoch_count = 0
 
     def __len__(self):
         return self.pair_count // self.batch_size // self.epochs_per_completion
@@ -62,6 +69,7 @@ class PickGenerator(tf.keras.utils.Sequence):
             counts = json.load(count_file)
             self.context_count = counts['contexts']
         self.batch_size = batch_size
+        self.seed = seed
         self.seen = load_npy_to_tensor(folder/'seen.npy.zstd')
         self.picked = load_npy_to_tensor(folder/'picked.npy.zstd')
         self.coords = load_npy_to_tensor(folder/'coords.npy.zstd')
@@ -69,11 +77,16 @@ class PickGenerator(tf.keras.utils.Sequence):
         self.chosen_idx = load_npy_to_tensor(folder/'chosen_idx.npy.zstd')
         self.y_idx = load_npy_to_tensor(folder/'y_idx.npy.zstd')
         self.cards_in_pack = load_npy_to_tensor(folder/'cards_in_pack.npy.zstd')
-        self.rng = np.random.Generator(np.random.PCG64(seed))
+        self.rng = np.random.Generator(np.random.PCG64(self.seed))
         self.shuffled_indices = np.arange(self.context_count)
         # We call on_epoch_end immediately so this'll become 0 and be an accurate count.
         self.epoch_count = -1
         self.epochs_per_completion = epochs_per_completion
+        self.on_epoch_end()
+
+    def reset_rng(self):
+        self.rng = np.random.Generator(np.random.PCG64(self.seed))
+        self.epoch_count = -1
         self.on_epoch_end()
 
     def __len__(self):

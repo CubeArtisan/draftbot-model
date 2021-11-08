@@ -38,6 +38,8 @@ class TensorBoardFix(tf.keras.callbacks.TensorBoard):
         super(TensorBoardFix, self).on_test_begin(*args, **kwargs)
         tf.summary.experimental.set_step(self._val_step)
 
+TensorBoardFix.__name__ = 'TensorBoard'
+
 
 class Range(object):
     def __init__(self, start, end):

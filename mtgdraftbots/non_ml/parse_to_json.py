@@ -3,6 +3,7 @@ import csv
 import itertools
 import json
 import sys
+from pathlib import Path
 
 from tqdm.auto import tqdm
 
@@ -113,7 +114,7 @@ def process_file(name_to_int, filename):
 
 
 if __name__ == '__main__':
-    with open('data/maps/int_to_card.json') as fp:
+    with open(Path(sys.argv[1]).parent/'int_to_card.json') as fp:
         int_to_card = json.load(fp)
     name_to_int = {c['name'].replace(' ', '_'): i for i, c in enumerate(int_to_card)}
     state_iter = process_file(name_to_int, sys.argv[1])

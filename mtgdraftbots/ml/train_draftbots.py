@@ -21,7 +21,7 @@ from mtgdraftbots.ml.tqdm_callback import TQDMProgressBar
 from mtgdraftbots.ml.utils import Range, TensorBoardFix
 
 BATCH_CHOICES = tuple(2 ** i for i in range(4, 18))
-EMBED_DIMS_CHOICES = tuple(2 ** i for i in range(1, 10))
+EMBED_DIMS_CHOICES = tuple(2 ** i for i in range(0, 10))
 ACTIVATION_CHOICES = ('relu', 'selu', 'swish', 'tanh', 'sigmoid', 'linear', 'gelu', 'elu')
 OPTIMIZER_CHOICES = ('adam', 'adamax', 'lazyadam', 'rectadam', 'novograd', 'lamb', 'adadelta',
                      'nadam', 'rmsprop')
@@ -125,10 +125,13 @@ if __name__ == "__main__":
 
     logging.info('Creating the pick Datasets.')
     train_epochs_per_cycle = args.epochs_per_cycle
-    pick_generator_train = PickPairGenerator(args.batch_size, Path(directory/'training_parsed_picks'),
+    # pick_generator_train = PickPairGenerator(args.batch_size, directory/'training_parsed_picks',
+    #                                          train_epochs_per_cycle, args.seed)
+    pick_generator_train = PickGenerator(args.batch_size, directory/'training_parsed_picks',
                                              train_epochs_per_cycle, args.seed)
     logging.info(f"There are {len(pick_generator_train):,} training batches.")
-    pick_generator_test = PickGenerator(args.batch_size // 4, Path(directory/'validation_parsed_picks'),
+    # pick_generator_test = pick_generator_train
+    pick_generator_test = PickGenerator(args.batch_size, directory/'validation_parsed_picks',
                                         1, args.seed)
     logging.info(f"There are {len(pick_generator_test):n} validation batches.")
     logging.info(f"There are {len(cards_json):n} cards being trained on.")
@@ -193,12 +196,13 @@ if __name__ == "__main__":
     tf.config.threading.set_intra_op_parallelism_threads(32)
     tf.config.threading.set_inter_op_parallelism_threads(32)
 
+    color_name = {'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': "Red", 'G': 'Green'}
     metadata = os.path.join(log_dir, 'metadata.tsv')
     with open(metadata, "w") as f:
         f.write('Index\tName\tColors\tMana Value\tType\n')
         f.write('0\t"PlaceholderForTraining"\t1278\t1287\t1827\n')
         for i, card in enumerate(cards_json):
-            f.write(f'{i+1}\t"{card["name"]}"\t{"".join(sorted(card.get("color_identity")))}\t{card["cmc"]}\t{card.get("type")}\n')
+            f.write(f'{i+1}\t"{card["name"]}"\t{"".join(color_name[x] for x in sorted(card.get("color_identity")))}\t{card["cmc"]}\t{card.get("type")}\n')
 
     logging.info('Loading DraftBot model.')
     output_dir = f'././ml_files/{args.name}/'
@@ -210,9 +214,8 @@ if __name__ == "__main__":
     del draftbots_kwargs["batch_size"]
     del draftbots_kwargs["learning_rate"]
     del draftbots_kwargs["optimizer"]
-    draftbots = DraftBot(num_items=len(cards_json) + 1, summary_period=tensorboard_period * 4,
-                         name='DraftBot', **draftbots_kwargs, **draftbots_bool_kwargs)
-    latest = tf.train.latest_checkpoint(output_dir)
+    draftbots = DraftBot(num_items=len(cards_json) + 1, name='DraftBot', **draftbots_kwargs,
+                         **draftbots_bool_kwargs)
     learning_rate = args.learning_rate or 1e-03
     if args.optimizer == 'adam':
         opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
@@ -238,10 +241,11 @@ if __name__ == "__main__":
     if args.auto16:
         logging.warn("WARNING 16 bit rewrite mode can cause numerical instabilities.")
         tf.compat.v1.mixed_precision.enable_mixed_precision_graph_rewrite(opt)
+    draftbots.compile(optimizer=opt, loss=lambda y_true, y_pred: 0.0)
+    latest = tf.train.latest_checkpoint(output_dir)
     if latest is not None:
         logging.info('Loading Checkpoint.')
         draftbots.load_weights(latest)
-    draftbots.compile(optimizer=opt, loss=lambda y_true, y_pred: 0.0)
 
     logging.info('Starting training')
     callbacks = []
