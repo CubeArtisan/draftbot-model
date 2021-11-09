@@ -26,11 +26,10 @@ from mtgdraftbots.ml.utils import Range, TensorBoardFix
 
 directory = Path(sys.argv[1])
 seed = int(sys.argv[3])
-tf.keras.utils.set_random_seed(seed)
 print('Loading generators.')
-pick_generator_train = PickGenerator(1, directory/'training_parsed_picks', 8, seed)
+pick_generator_train = PickGenerator(128, directory/'training_parsed_picks', 22, seed)
 print(f"There are {len(pick_generator_train):,} training picks.")
-pick_generator_test = PickGenerator(8192, directory/'validation_parsed_picks', 1, seed)
+pick_generator_test = PickGenerator(4096, directory/'validation_parsed_picks', 1, seed)
 print(f"There are {len(pick_generator_test):,} validation batches.")
 with open(directory/'int_to_card.json', 'r') as cards_file:
     cards_json = json.load(cards_file)
@@ -58,37 +57,38 @@ tf.config.threading.set_intra_op_parallelism_threads(32)
 tf.config.threading.set_inter_op_parallelism_threads(32)
 
 def model_builder(hp):
-    batch_size = 2048
-    learning_rate = hp.Float('learning_rate', 1e-04, 1e-02, sampling='log', default=1e-03)
+    batch_size = 128
+    learning_rate = 1e-04
+    # learning_rate = hp.Float('learning_rate', 1e-04, 1e-02, sampling='log', default=1e-03)
     # optimizer = hp.Choice('optimizer', ('adam', 'adamax', 'lazyadam', 'rectadam', 'novograd', 'adadelta', 'nadam',))
     optimizer = 'adam'
     log_loss_weight = hp.Float('log_loss_weight', 0, 1, step=0.01, default=0.5)
     hparams = {
-        'dropout_dense': hp.Float('dropout_dense', 0, 0.95, step=0.01, default=0.5),
-        'dropout_picked': hp.Float('dropout_picked', 0, 0.9, step=0.01, default=0.5),
-        'dropout_seen': hp.Float('dropout_seen', 0, 0.95, step=0.01, default=0.5),
         'activation': 'tanh',
         # 'activation': hp.Choice('activation', ('elu', 'selu', 'relu', 'tanh', 'sigmoid', 'linear', 'swish'), default='tanh'),
-        'normalize_sum': hp.Boolean('normalize_sum', default=True),
-        'contrastive_loss_weight': 1.0 - log_loss_weight,
+        'normalize_sum': hp.Boolean('normalize_sum'),
+        'triplet_loss_weight': 1.0 - log_loss_weight,
         'log_loss_weight': log_loss_weight,
-        'embed_dims': 128,
-        'picked_dims': 128,
-        'seen_dims': 256,
-        'margin': 1,
+        'embed_dims': 256,
         'pool_context_ratings': True,
-        'seen_context_ratings': True,
-        'rating_uniformity_weight': 0.0,
-        'picked_synergy_uniformity_weight': 0.0,
-        'seen_synergy_uniformity_weight': 0.0,
-        'picked_variance_weight': 0.0,
-        'seen_variance_weight': 0.0,
-        'picked_distance_l2_weight': 0.0,
-        'seen_distance_l2_weight': 0.0,
-        'item_ratings': True,
-        'hyperbolic': False,
-        'bounded_distance': True,
-        'final_activation': 'linear',
+        'picked_dims': 512,
+        'picked_hidden_units': 128,
+        'seen_context_ratings': hp.Boolean('seen_context_ratings'),
+        'dropout_picked': 0.5,
+        'dropout_picked': hp.Float('dropout_picked', 0, 0.9, step=0.01, default=0.5),
+        'picked_dropout_dense': 0.5,
+        'picked_dropout_dense': hp.Float('picked_dropout_dense', 0, 0.95, step=0.01, default=0.5),
+        'seen_dims': 512,
+        'seen_hidden_units': 128,
+        'dropout_seen': hp.Float('dropout_seen', 0, 0.95, step=0.01, default=0.5),
+        'seen_dropout_dense': hp.Float('seen_dropout_dense', 0, 0.95, step=0.01, default=0.5),
+        'dropout_seen': 0.0,
+        'seen_dropout_dense': 0.5,
+        'margin': 1,
+        'item_ratings': hp.Boolean('item_ratings'),
+        'hyperbolic': hp.Boolean('hyperbolic'),
+        'bounded_distance': hp.Boolean('bounded_distance'),
+        'final_activation': hp.Choice('final_activation', ('tanh', 'linear')),
     }
     draftbots = DraftBot(num_items=len(cards_json) + 1, **hparams, name='DraftBot')
     if optimizer == 'adam':
@@ -105,11 +105,12 @@ def model_builder(hp):
         opt = tfa.optimizers.RectifiedAdam(learning_rate=learning_rate)
     if optimizer == 'novograd':
         opt = tfa.optimizers.NovoGrad(learning_rate=learning_rate)
-    pick_generator_train.epochs_per_completion = int(math.ceil(len(pick_generator_train.picked) / 2048 / batch_size))
-    draftbots.compile(optimizer=opt, loss=lambda y_true, y_pred: 0.0)
+    # pick_generator_train.epochs_per_completion = int(math.ceil(len(pick_generator_train.picked) / 2048 / batch_size))
+    tf.keras.utils.set_random_seed(seed)
     pick_generator_test.reset_rng()
     pick_generator_train.reset_rng()
     pick_generator_train.batch_size = batch_size
+    draftbots.compile(optimizer=opt, loss=lambda y_true, y_pred: 0.0)
     return draftbots
 
 
@@ -128,9 +129,9 @@ if __name__ == '__main__':
     tuner = BayesianOptimization(
         model_builder,
         objective=Objective("val_accuracy_top_1", direction="max"),
-        max_trials=18 * 20,
+        max_trials=160,
         seed=seed,
-        num_initial_points=18,
+        num_initial_points=20,
         project_name='MtgDraftBots',
         directory=sys.argv[2],
         overwrite=True,
@@ -150,7 +151,7 @@ if __name__ == '__main__':
     callbacks.append(es_callback)
     callbacks.append(tb_callback)
     # Comment out if using Hyperband
-    callbacks.append(time_stopping)
+    # callbacks.append(time_stopping)
     tuner.search(pick_generator_train, validation_data=pick_generator_test, callbacks=callbacks,
-                 epochs=32, validation_freq=1, max_queue_size=2**10)
+                 epochs=5, validation_freq=1, max_queue_size=2**10)
     tuner.results_summary()

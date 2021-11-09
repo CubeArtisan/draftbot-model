@@ -21,7 +21,7 @@ from mtgdraftbots.ml.tqdm_callback import TQDMProgressBar
 from mtgdraftbots.ml.utils import Range, TensorBoardFix
 
 BATCH_CHOICES = tuple(2 ** i for i in range(4, 18))
-EMBED_DIMS_CHOICES = tuple(2 ** i for i in range(0, 10))
+EMBED_DIMS_CHOICES = tuple(2 ** i + j for i in range(0, 10) for j in range(2))
 ACTIVATION_CHOICES = ('relu', 'selu', 'swish', 'tanh', 'sigmoid', 'linear', 'gelu', 'elu')
 OPTIMIZER_CHOICES = ('adam', 'adamax', 'lazyadam', 'rectadam', 'novograd', 'lamb', 'adadelta',
                      'nadam', 'rmsprop')
@@ -40,34 +40,26 @@ HYPER_PARAMS = (
      "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the pool embedding.'},
     {"name": 'dropout_seen', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
      "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the seen embedding.'},
-    {"name": 'dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+    {"name": 'picked_dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
      "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
-    {"name": 'contrastive_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
+    {"name": 'seen_dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
+    {"name": 'triplet_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
      "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on difference of the scores.'},
     {"name": 'log_loss_weight', "type": float, "default": 1.0, "choices": [Range(0.0, 1.0)],
      "range": hp.RealInterval(0.0, 1.0), "help": 'The relative weight of the loss based on the log of the probability we guess correctly for each pair.'},
-    {"name": 'rating_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make card ratings uniformly distributed.'},
-    {"name": 'picked_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make picked synergies uniformly distributed.'},
-    {"name": 'seen_synergy_uniformity_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight of the loss to make seen synergies uniformly distributed.'},
     {"name": 'margin', "type": float, "default": 1.0, "choices": [Range(0.0, 1e+02)],
      "range": hp.RealInterval(0.0, 1e+02), "help": 'The minimum amount the score of the correct option should win by.'},
-    {"name": 'picked_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of picked contextual rating close to that of a uniform distribution.'},
-    {"name": 'seen_variance_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to making the variance of seen contextual rating close to that of a uniform distribution.'},
-    {"name": 'picked_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the picked contextual rating distances.'},
-    {"name": 'seen_distance_l2_weight', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The weight given to the L2 loss on the seen contextual rating distances.'},
     {"name": 'activation', "type": str, "default": 'elu', "choices": ACTIVATION_CHOICES,
      "range": hp.Discrete(ACTIVATION_CHOICES), "help": "The activation function for the hidden layers."},
-    {"name": 'final_activation', "type": str, "default": 'elu', "choices": ACTIVATION_CHOICES,
+    {"name": 'final_activation', "type": str, "default": 'linear', "choices": ACTIVATION_CHOICES,
      "range": hp.Discrete(ACTIVATION_CHOICES), "help": "The activation function for the final embedding layer."},
     {"name": 'optimizer', "type": str, "default": 'adam', "choices": OPTIMIZER_CHOICES,
      "range": hp.Discrete(OPTIMIZER_CHOICES), "help": "The optimization algorithm to use."},
+    {"name": "seen_hidden_units", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for the seen hidden layer.'},
+    {"name": "picked_hidden_units", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for the picked hidden layer.'},
 )
 
 BOOL_HYPER_PARAMS = (
@@ -119,9 +111,8 @@ if __name__ == "__main__":
     logging.info('Loading card data for seeding weights.')
     with open(directory/'int_to_card.json', 'r') as cards_file:
         cards_json = json.load(cards_file)
-        card_ratings = [-1] + [(c.get('elo', 1200) / 1200) - 1  for c in cards_json]
-        blank_embedding = [1 for _ in range(64)]
-        card_names = [''] + [c['name'] for c in cards_json]
+        card_ratings = [(c.get('elo', 1200) / 1200) - 1  for c in cards_json]
+        card_names = [c['name'] for c in cards_json]
 
     logging.info('Creating the pick Datasets.')
     train_epochs_per_cycle = args.epochs_per_cycle
@@ -131,7 +122,7 @@ if __name__ == "__main__":
                                              train_epochs_per_cycle, args.seed)
     logging.info(f"There are {len(pick_generator_train):,} training batches.")
     # pick_generator_test = pick_generator_train
-    pick_generator_test = PickGenerator(args.batch_size, directory/'validation_parsed_picks',
+    pick_generator_test = PickGenerator(8192, directory/'validation_parsed_picks',
                                         1, args.seed)
     logging.info(f"There are {len(pick_generator_test):n} validation batches.")
     logging.info(f"There are {len(cards_json):n} cards being trained on.")

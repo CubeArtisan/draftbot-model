@@ -8,8 +8,8 @@ FIXED = [
     "--deterministic",
     "--xla",
     "-32",
-    "--epochs", '8',
-    "--epochs_per_cycle", "4",
+    "--epochs", '5',
+    "--epochs_per_cycle", "5",
     "--seed", '127',
     "--pool_context_ratings",
 ]
@@ -26,41 +26,33 @@ def bool_arg(name):
 
 def launch_command(args, counter):
     command = ' '.join(itertools.chain(('python', '-m', 'mtgdraftbots.ml.train_draftbots', '--name', f'run-{counter:03d}'), args))
-    print('Running', command)
+    print(command)
     print('Result', subprocess.run(command, shell=True))
 
 
 VALUE_HYPER_PARAMS = {
-    'batch_size': (8192,),
-    'learning_rate': ('1e-04', '1e-03', '1e-02'),
-    'embed_dims': (2, 64, 128),
-    'seen_dims': (2, 64, 128),
-    'picked_dims': (2, 64, 128),
-    'dropout_picked': (0.0, 0.25, 0.5, 0.75),
-    'dropout_seen': (0.0, 0.3, 0.5, 0.85),
-    'dropout_dense': (0.0, 0.2, 0.5),
-    'contrastive_loss_weight': (1.0,),
-    'log_loss_weight': (0.0, 0.1),
-    'rating_uniformity_weight': (0,),
-    'picked_synergy_uniformity_weight': (0,),
-    'seen_synergy_uniformity_weight': (0,),
-    'margin': (0, 1, 10),
-    'picked_variance_weight': (0.0,),
-    'seen_variance_weight': (0.0,),
-    'picked_distance_l2_weight': (0.0,),
-    'seen_distance_l2_weight': (0.0,),
-    # 'picked_variance_weight': (0.0, '1e-01'),
-    # 'seen_variance_weight': (0.0, '1e-01'),
-    # 'picked_distance_l2_weight': (0.0, '1e-04'),
-    # 'seen_distance_l2_weight': (0.0, '1e-04'),
-    'activation': ('elu', 'relu', 'selu', 'tanh', 'sigmoid', 'linear'),
-    'final_activation': ('tanh', 'linear'),
-    'optimizer': ('adam', 'adamax'),
+    'batch_size': (4096,),
+    'learning_rate': ('1e-04',),
+    'embed_dims': (256,),
+    'dropout_picked': (0.0,),
+    'dropout_seen': (0.0,),
+    'picked_dropout_dense': (0.5,),
+    'picked_hidden_units': (128,),
+    'picked_dims': (512,),
+    'seen_dropout_dense': (0.5,),
+    'seen_hidden_units': (128,),
+    'seen_dims': (512,),
+    'triplet_loss_weight': (1.0,),
+    'log_loss_weight': (0.0, 1.0),
+    'margin': (1,),
+    'activation': ('tanh',),
+    'final_activation': ('linear',),
+    'optimizer': ('adam',),
 }
 BOOL_HYPER_PARAMS = (
     'seen_context_ratings',
     'item_ratings',
-    # 'hyperbolic',
+    'hyperbolic',
     'bounded_distance',
     'normalize_sum',
 )

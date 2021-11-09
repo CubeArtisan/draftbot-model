@@ -74,7 +74,6 @@ class PickGenerator(tf.keras.utils.Sequence):
         self.picked = load_npy_to_tensor(folder/'picked.npy.zstd')
         self.coords = load_npy_to_tensor(folder/'coords.npy.zstd')
         self.coord_weights = load_npy_to_tensor(folder/'coord_weights.npy.zstd')
-        self.chosen_idx = load_npy_to_tensor(folder/'chosen_idx.npy.zstd')
         self.y_idx = load_npy_to_tensor(folder/'y_idx.npy.zstd')
         self.cards_in_pack = load_npy_to_tensor(folder/'cards_in_pack.npy.zstd')
         self.rng = np.random.Generator(np.random.PCG64(self.seed))
@@ -102,5 +101,5 @@ class PickGenerator(tf.keras.utils.Sequence):
         context_idxs = self.shuffled_indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         result = (self.cards_in_pack[context_idxs], self.picked[context_idxs],
                   self.seen[context_idxs], self.coords[context_idxs],
-                  self.coord_weights[context_idxs], self.chosen_idx[context_idxs], self.y_idx[context_idxs])
+                  self.coord_weights[context_idxs], self.y_idx[context_idxs])
         return (result, self.y_idx[context_idxs])
