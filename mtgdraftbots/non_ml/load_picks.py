@@ -30,8 +30,8 @@ default_basic_ids = [
 ]
 default_basics = [card_to_int[c] for c in default_basic_ids]
 
-MAX_PICKED = 84
-MAX_SEEN = 400
+MAX_PICKED = 44
+MAX_SEEN = 360
 MAX_CARDS_IN_PACK = 15
 BASIC_MULTIPLICITY = 8
 

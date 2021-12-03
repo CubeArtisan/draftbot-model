@@ -96,7 +96,7 @@ def reconstruct_states(packs, picks):
                 states_per_player[player_index][pick_index]['pickNum'] = pick_num
                 states_per_player[player_index][pick_index]['packNum'] = pack_num
                 del pack[picked_idx]
-    return [{ "picks": player_states} for player_states in states_per_player]
+    return [{ "picks": player_states, "basics": []} for player_states in states_per_player]
 
 
 def process_file(name_to_int, filename):

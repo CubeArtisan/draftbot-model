@@ -33,9 +33,10 @@ def inner_product_hyper(x, y, keepdims=False, name='HyperbolicInnerProduct'):
     with tf.name_scope(name) as scope:
         prod_xy = tf.math.multiply(x, y, name='prod_xy')
         summed = tf.math.reduce_sum(prod_xy[..., 1:], axis=-1, name='summed')
-        result = tf.math.subtract(summed, prod_xy[..., 0], name=scope)
+        result = tf.math.subtract(summed, prod_xy[..., 0],
+                                  name=f'{scope}_unexpanded' if keepdims else scope)
         if keepdims:
-            return tf.expand_dims(result, -1)
+            return tf.expand_dims(result, -1, name=scope)
         else:
             return result
 
@@ -79,7 +80,7 @@ def logmap(vec, origin, curvature, name='HyperbolicLogMap'):
         inner_scaled = tf.math.divide(inner_product_hyper(vec, origin, keepdims=True, name='inner_product'),
                                       curvature, name='inner_product_scaled')
         distance = tf.math.multiply(tf.math.sqrt(curvature, name='sqrt_curvature'),
-                                    safe_acosh(tf.math.negative(inner_scaled, name='negative_inner_scaled'), name='acosh_inner'),
+                                    safe_acosh(tf.math.negative(inner_scaled + 1e-04, name='negative_inner_scaled'), name='acosh_inner'),
                                     name='distance')
         unnormalized = tf.math.add(vec, tf.math.multiply(origin, inner_scaled, name='scaled_origin'), name='unnormalized')
         multiplier = tf.math.divide(distance, norm_hyper(unnormalized, keepdims=True, name='norm_unnormalized') + 1e-04,
@@ -138,13 +139,13 @@ class DropoutHyperbolic(tf.keras.layers.Layer):
 
     def build(self, input_shape):
         self.input_dims = input_shape[0][-1]
+        self.keras_dropout = tf.keras.layers.Dropout(self.rate)
 
     def call(self, inputs, training=False):
         vecs, curvature = inputs
         origin = origin_hyper(curvature, self.input_dims)
         log_vecs = logmap(vecs, origin, curvature, name='log_vecs')
-        log_dropped_out = dropout(log_vecs, self.rate, scale=self.normalization, training=training,
-                                  name='log_dropped_out')
+        log_dropped_out = self.keras_dropout(log_vecs, training=training)
         return expmap(log_dropped_out, origin, curvature, name=self.name)
 
 
@@ -241,7 +242,8 @@ class SetHyperEmbedding(tf.keras.layers.Layer):
                                          name='hidden')
         self.output_layer = DenseHyperbolic(self.final_dims, activation=self.final_activation,
                                       use_bias=True, name='output_layer')
-        self.dense_dropout = tf.keras.layers.Dropout(rate=self.dense_dropout_rate, name='dense_dropout')
+        self.dense_dropout = DropoutHyperbolic(rate=self.dense_dropout_rate, name='dense_dropout')
+        self.dense_dropout2 = DropoutHyperbolic(rate=self.dense_dropout_rate, name='dense_dropout2')
 
     def call(self, inputs, training=False):
         indices, curvature = inputs
@@ -253,8 +255,8 @@ class SetHyperEmbedding(tf.keras.layers.Layer):
         if self.normalize_sum:
             summed_embeds = tf.math.l2_normalize(summed_embeds, axis=-1, epsilon=1e-04,
                                                  name='normalized_embeds')
-        summed_embeds = self.dense_dropout(summed_embeds)
+        summed_embeds = self.dense_dropout((summed_embeds, curvature), training=training)
         hyper_embeds = to_hyper(summed_embeds, curvature, name='hyper_embeds')
-        hidden = self.dense_dropout(self.hidden((hyper_embeds, curvature, curvature)),
+        hidden = self.dense_dropout2((self.hidden((hyper_embeds, curvature, curvature)), curvature),
                                     training=training)
         return self.output_layer((hidden, curvature, curvature))

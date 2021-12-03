@@ -34,13 +34,13 @@ HYPER_PARAMS = (
      "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": "The number of dimensions to use for card embeddings."},
     {"name": "seen_dims", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
      "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for seen card embeddings.'},
-    {"name": 'picked_dims', "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
-     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for picked card embeddings.'},
-    {"name": 'dropout_picked', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the pool embedding.'},
+    {"name": 'pool_dims', "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for pool card embeddings.'},
+    {"name": 'dropout_pool', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from pool when calculating the pool embedding.'},
     {"name": 'dropout_seen', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
-     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from picked when calculating the seen embedding.'},
-    {"name": 'picked_dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
+     "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of cards to drop from pool when calculating the seen embedding.'},
+    {"name": 'pool_dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
      "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
     {"name": 'seen_dropout_dense', "type": float, "default": 0.0, "choices": [Range(0.0, 1.0)],
      "range": hp.RealInterval(0.0, 1.0), "help": 'The percent of values to drop from the dense layers when calculating pool/seen embeddings.'},
@@ -58,8 +58,8 @@ HYPER_PARAMS = (
      "range": hp.Discrete(OPTIMIZER_CHOICES), "help": "The optimization algorithm to use."},
     {"name": "seen_hidden_units", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
      "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for the seen hidden layer.'},
-    {"name": "picked_hidden_units", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
-     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for the picked hidden layer.'},
+    {"name": "pool_hidden_units", "type": int, "default": 16, "choices": EMBED_DIMS_CHOICES,
+     "range": hp.Discrete(EMBED_DIMS_CHOICES), "help": 'The number of dimensions to use for the pool hidden layer.'},
 )
 
 BOOL_HYPER_PARAMS = (
@@ -191,7 +191,6 @@ if __name__ == "__main__":
     metadata = os.path.join(log_dir, 'metadata.tsv')
     with open(metadata, "w") as f:
         f.write('Index\tName\tColors\tMana Value\tType\n')
-        f.write('0\t"PlaceholderForTraining"\t1278\t1287\t1827\n')
         for i, card in enumerate(cards_json):
             f.write(f'{i+1}\t"{card["name"]}"\t{"".join(color_name[x] for x in sorted(card.get("color_identity")))}\t{card["cmc"]}\t{card.get("type")}\n')
 
@@ -199,7 +198,7 @@ if __name__ == "__main__":
     output_dir = f'././ml_files/{args.name}/'
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     num_batches = len(pick_generator_train)
-    tensorboard_period = num_batches // 20
+    tensorboard_period = len(pick_generator_test)
     draftbots_kwargs = {param["name"]: getattr(args, param["name"]) for param in HYPER_PARAMS}
     draftbots_bool_kwargs = {param["name"]: getattr(args, param["name"]) for param in BOOL_HYPER_PARAMS}
     del draftbots_kwargs["batch_size"]
@@ -221,7 +220,7 @@ if __name__ == "__main__":
     if args.optimizer == 'lazyadam':
         opt = tfa.optimizers.LazyAdam(learning_rate=learning_rate)
     if args.optimizer == 'rectadam':
-        opt = tfa.optimizers.RectifiedAdam(learning_rate=learning_rate)
+        opt = tfa.optimizers.RectifiedAdam(learning_rate=learning_rate, weight_decay=1e-07)
     if args.optimizer == 'novograd':
         opt = tfa.optimizers.NovoGrad(learning_rate=learning_rate)
     if args.optimizer == 'lamb':

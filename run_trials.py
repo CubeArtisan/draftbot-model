@@ -43,11 +43,11 @@ VALUE_HYPER_PARAMS = {
     'seen_hidden_units': (128,),
     'seen_dims': (512,),
     'triplet_loss_weight': (1.0,),
-    'log_loss_weight': (0.0, 1.0),
     'margin': (1,),
     'activation': ('tanh',),
     'final_activation': ('linear',),
     'optimizer': ('adam',),
+    'log_loss_weight': (0.0, 1.0),
 }
 BOOL_HYPER_PARAMS = (
     'seen_context_ratings',
