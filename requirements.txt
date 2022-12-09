@@ -5,7 +5,7 @@ attrs==21.2.0
 autopage==0.4.0
 backcall==0.2.0
 cachetools==4.2.2
-certifi==2021.5.30
+certifi==2022.12.7
 charset-normalizer==2.0.4
 cliff==3.9.0
 cloudpickle==2.0.0
