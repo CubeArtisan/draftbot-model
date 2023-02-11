@@ -27,7 +27,7 @@ grpcio==1.39.0
 gviz-api==1.9.0
 h5py==3.1.0
 idna==3.2
-ipython==7.31.1
+ipython==8.10.0
 jedi==0.18.0
 jsonslicer==0.1.7
 keras-nightly==2.8.0.dev2021100807
